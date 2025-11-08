@@ -1,0 +1,88 @@
+{
+  "ssh": [
+    {
+      "cve": "CVE-2016-0777",
+      "version": "OpenSSH_7.1",
+      "description": "OpenSSH 7.1p2 client information leak vulnerability",
+      "severity": "medium"
+    },
+    {
+      "cve": "CVE-2018-15473",
+      "version": "OpenSSH_7.7",
+      "description": "Username enumeration vulnerability in OpenSSH",
+      "severity": "low"
+    }
+  ],
+  "apache": [
+    {
+      "cve": "CVE-2021-41773",
+      "version": "2.4.49",
+      "description": "Path traversal and RCE vulnerability in Apache HTTP Server",
+      "severity": "critical"
+    },
+    {
+      "cve": "CVE-2021-42013",
+      "version": "2.4.50",
+      "description": "Path traversal and RCE in Apache HTTP Server 2.4.50",
+      "severity": "critical"
+    },
+    {
+      "cve": "CVE-2019-0211",
+      "version": "2.4.38",
+      "description": "Apache HTTP Server privilege escalation vulnerability",
+      "severity": "high"
+    }
+  ],
+  "nginx": [
+    {
+      "cve": "CVE-2019-9511",
+      "keywords": ["nginx/1.16.0", "nginx/1.15"],
+      "description": "HTTP/2 implementation DoS vulnerability",
+      "severity": "high"
+    },
+    {
+      "cve": "CVE-2017-7529",
+      "keywords": ["nginx/1.13.2", "nginx/1.12"],
+      "description": "Integer overflow in nginx range filter module",
+      "severity": "high"
+    }
+  ],
+  "mysql": [
+    {
+      "cve": "CVE-2016-6662",
+      "version": "5.5.51",
+      "description": "MySQL Remote Root Code Execution",
+      "severity": "critical"
+    },
+    {
+      "cve": "CVE-2012-2122",
+      "keywords": ["5.5.23", "5.1.63"],
+      "description": "MySQL authentication bypass vulnerability",
+      "severity": "high"
+    }
+  ],
+  "ftp": [
+    {
+      "cve": "CVE-2015-3306",
+      "keywords": ["ProFTPD 1.3.5"],
+      "description": "ProFTPD mod_copy arbitrary file copy vulnerability",
+      "severity": "critical"
+    }
+  ],
+  "telnet": [
+    {
+      "cve": "CVE-2020-10188",
+      "keywords": ["telnetd"],
+      "description": "Telnet server utility arbitrary code execution",
+      "severity": "high"
+    }
+  ],
+  "http": [
+    {
+      "cve": "CVE-2014-6271",
+      "keywords": ["Shellshock", "bash"],
+      "description": "Bash Shellshock vulnerability affecting CGI scripts",
+      "severity": "critical"
+    }
+  ]
+}
