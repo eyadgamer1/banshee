@@ -14,8 +14,8 @@ network assets using local LLM-assisted analysis. No exploitation. Scope-guarded
 
 | Phase | Name | Status |
 |-------|------|--------|
-| P0 | Bootstrap & Config | 🔄 |
-| P1 | Core Engine + Scope-Guard | ⬜ |
+| P0 | Bootstrap & Config | ✅ |
+| P1 | MVP working pps | 🔄 Wave 0 ✅ (core), Wave 1 next |
 | P2 | Discovery Modules | ⬜ |
 | P3 | Fingerprint + Correlate + Risk | ⬜ |
 | P4 | Intel + LLM + Report | ⬜ |
@@ -27,7 +27,7 @@ network assets using local LLM-assisted analysis. No exploitation. Scope-guarded
 
 | Module | Path | Status | Feature IDs |
 |--------|------|--------|-------------|
-| core | scanner/core/ | ⬜ | A1, D3, E5, CLI |
+| core | scanner/core/ | 🔄 Wave0✅ | A1, D3, E5, CLI |
 | discovery | scanner/discovery/ | ⬜ | A2, A3, A4, A5 |
 | fingerprint | scanner/fingerprint/ | ⬜ | B1–B13 |
 | correlate | scanner/correlate/ | ⬜ | C1–C4 |

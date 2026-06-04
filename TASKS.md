@@ -1,34 +1,46 @@
 # TASKS.md — PythonProjectScanner
 
-## P0 — Bootstrap
+Coordination: claim → build → tests green → mark ✅ → orchestrator merges.
+Workers touch ONLY their module path + their test file + their `memory/modules/<name>.md`.
+Workers do NOT run git / uv sync / uv add, and do NOT edit TASKS.md or 000_INDEX.md.
+
+## P0 — Bootstrap ✅
 
 | ID | Module | Task | Status | Agent |
 |----|--------|------|--------|-------|
-| P0-1 | infra | Verify Python 3.12 + uv + nmap + ollama installed | ✅ | orchestrator |
-| P0-2 | infra | Create project scaffold (dirs, pyproject.toml, config/) | ✅ | orchestrator |
-| P0-3 | infra | Write .claude/ config (settings, mcp, CLAUDE.md, agents/) | ✅ | orchestrator |
-| P0-4 | infra | Create memory vault (000_INDEX, 001_DECISIONS, modules/) | ✅ | orchestrator |
-| P0-5 | core | Write scanner/cli.py skeleton (typer app, --target, --config) | ⬜ | agent-core |
-| P0-6 | core | Implement scope-guard E5 (ScopeViolationError, CIDR allowlist) | ⬜ | agent-core |
-| P0-7 | tests | Write tests/test_scope.py (in-scope pass, out-of-scope raise) | ⬜ | agent-tests |
-| P0-8 | infra | Run `uv run pytest` — all P0 tests pass | ⬜ | orchestrator |
-| P0-9 | infra | Commit: chore(p0): bootstrap project structure + claude config | ⬜ | orchestrator |
+| P0-1..9 | infra | scaffold, .claude/, memory, deps, commit | ✅ | orchestrator |
 
-## P1 — Core Engine + Scope-Guard
+## P1 — MVP working `pps`  (A1 A3 B1 B2 B6 + C7-lite + dials + E3 + E4-lite + E5)
+
+### Wave 0 — core foundation (orchestrator, blocking)
 
 | ID | Module | Task | Status | Agent |
 |----|--------|------|--------|-------|
-| P1-1 | core | Implement async scan engine (A1) | ⬜ | agent-core |
-| P1-2 | core | Implement stealth-budget controller (D3) | ⬜ | agent-core |
-| P1-3 | core | Full CLI with scan/report subcommands | ⬜ | agent-core |
-| P1-4 | tests | tests/test_engine.py passing | ⬜ | agent-tests |
+| P1-0a | core | models.py — Host/Service/Finding/ConfidenceTier/ScanConfig/ScanResult (pydantic) | ✅ | orchestrator |
+| P1-0b | core | interfaces.py — Discoverer/Fingerprinter/ReportWriter Protocols + ScanContext | ✅ | orchestrator |
+| P1-0c | core | scope.py — E5 ScopeGuard, ScopeViolationError, banner, dry-run, audit-log | ✅ | orchestrator |
+| P1-0d | core | budget.py — D3 StealthBudget, --mode + -T0..T5 → concurrency/delay/probe-policy | ✅ | orchestrator |
+| P1-0e | core | engine.py — A1 async ScanEngine, target expansion, DI pipeline | ✅ | orchestrator |
+| P1-0f | core | cli.py — typer two-dial flags, grouped help, banner, wiring | ✅ | orchestrator |
+| P1-0g | tests | test_scope / test_budget / test_engine (core, with fakes) | ✅ | orchestrator |
 
-## P2 — Discovery
+### Wave 1 — parallel module workers (Sonnet, against frozen core contract)
 
 | ID | Module | Task | Status | Agent |
 |----|--------|------|--------|-------|
-| P2-1 | discovery | Passive ARP sniffer (A2) | ⬜ | agent-discovery |
-| P2-2 | discovery | Active ping sweep ICMP+TCP (A3) | ⬜ | agent-discovery |
-| P2-3 | discovery | IPv6 NDP discovery (A4) | ⬜ | agent-discovery |
-| P2-4 | discovery | Ghost-host detection (A5) | ⬜ | agent-discovery |
-| P2-5 | tests | tests/test_discovery.py passing | ⬜ | agent-tests |
+| P1-1 | discovery | A3 — TCP-connect ping sweep (+ICMP if priv), graceful no-admin | ⬜ | agent-discovery |
+| P1-2 | fingerprint | B1 oui (ARP-cache+OUI db) · B2 dhcp (passive, graceful) · B6 name-resolve (rDNS/mDNS/NetBIOS) | ⬜ | agent-fingerprint |
+| P1-3 | report | E3 writers txt/json/xml/html/csv · E4-lite rich live progress+table | ⬜ | agent-report |
+| P1-4 | risk | C7-lite — ConfidenceTier policy (Confirmed/Probable/Potential tagging) | ⬜ | agent-risk |
+| P1-5 | tests | per-module pytest (discovery/fingerprint/report/risk) green | ⬜ | agent-tests |
+
+### Wave 1.5 — integration (orchestrator)
+
+| ID | Module | Task | Status | Agent |
+|----|--------|------|--------|-------|
+| P1-6 | infra | wire concrete impls → cli/engine; full pytest+ruff+mypy; commit | ⬜ | orchestrator |
+
+## P2 — fingerprint+store (A2 B3 B4 B5 C7 A6 E2 + sarif)  — queued
+## P3 — risk+intel+llm (C4 C5 C6 C1 D1 D4 E1 + docx/pdf + LLM)  — queued
+## P4 — flagship/EDGE (B7 B8 C2 D3+ B12 D5 D6 A5 A4 B13 + dashboard E4)  — queued
+## P5 — moonshots (B9 B10 B11 D2 D7)  — research/optional
