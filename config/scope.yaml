@@ -1,0 +1,12 @@
+banner: "AUTHORIZED TARGETS ONLY"
+
+allowlist:
+  - 127.0.0.1/8
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+
+denylist: []
+
+max_hosts_per_scan: 1024
+max_ports_per_host: 1000

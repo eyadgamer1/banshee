@@ -1,0 +1,6 @@
+{
+  "model": "claude-opus-4-8",
+  "effortLevel": "xhigh",
+  "thinking": { "type": "adaptive" },
+  "subagentModel": "claude-sonnet-4-6"
+}
