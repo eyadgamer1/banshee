@@ -218,7 +218,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     print_banner(console, quiet=quiet, silent=silent)
 
     if not targets:
-        console.print("[red]error:[/red] no targets given. See [bold]pps --help[/bold].")
+        console.print("[red]error:[/red] no targets given. See [bold]banshee --help[/bold].")
         raise typer.Exit(code=2)
 
     if out_all:
