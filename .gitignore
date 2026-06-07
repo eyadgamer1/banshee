@@ -24,6 +24,8 @@ memory/
 .claude/
 graphify-out/
 TASKS.md
+tests/
+uv.lock
 
 # database & runtime
 *.db

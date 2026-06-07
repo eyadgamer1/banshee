@@ -298,12 +298,6 @@ These are hard-coded invariants, not configuration options:
 
 ---
 
-## Logo Prompt (for ChatGPT / Midjourney)
-
-> A terrifying screaming banshee ghost with glowing red eyes, hovering over a dark network topology diagram, long flowing dark robes, sharp claws extended, circuit board patterns woven into her body, dark background with red and black data streams, cyberpunk aesthetic, dramatic lighting, digital art style
-
----
-
 <div align="center">
 <sub>Built for authorized security testing only. Always scan with permission.</sub>
 </div>
