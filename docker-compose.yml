@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  banshee:
+    build: .
+    image: banshee-scanner:latest
+    container_name: banshee
+
+    # Raw socket access for passive sniffing and ICMP
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    network_mode: host   # required for live packet capture
+
+    volumes:
+      - ./config:/app/config:ro          # mount your scope.yaml + plugins
+      - ./output:/app/output             # scan output lands here
+
+    environment:
+      - PYTHONUNBUFFERED=1
+
+    # Override with: docker compose run banshee 192.168.1.0/24 --mode normal -T3
+    command: ["--help"]

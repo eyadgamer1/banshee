@@ -1,48 +1,27 @@
 """Report module — output writers (E3) and live terminal display (E4).
 
 Integration contract consumed by the CLI:
-  - `get_writers()` -> {format_name: ReportWriter}
-  - `render_result(console, result)` -> human-readable terminal summary
+  - `get_writers()` -> {format_name: ReportWriter}  (txt, json, xml, html, csv)
+  - `render_result(console, result)` -> final human-readable summary
+  - `live_status(console, enabled=...)` -> context manager yielding a progress hook
 
-Wave 0 ships a minimal JSON writer + plain summary so the CLI runs end-to-end.
-agent-report (P1-3) replaces this with txt/json/xml/html/csv writers and the
-rich live dashboard.
+P1-3 replaces the Wave-0 stub with the full E3 writer suite and the E4-lite
+rich display (spinner during the scan, table + findings afterwards).
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+from scanner.report.dashboard import live_status, render_result
+from scanner.report.writers import all_writers
+
 if TYPE_CHECKING:
-    from rich.console import Console
-
     from scanner.core.interfaces import ReportWriter
-    from scanner.core.models import ScanResult
 
-
-class _JsonWriter:
-    """Minimal JSON writer (Wave 0). Full E3 suite lands in P1-3."""
-
-    format_name = "json"
-
-    def write(self, result: ScanResult, path: Path) -> None:
-        Path(path).write_text(result.model_dump_json(indent=2), encoding="utf-8")
+__all__ = ["get_writers", "live_status", "render_result"]
 
 
 def get_writers() -> dict[str, ReportWriter]:
-    return {"json": _JsonWriter()}
-
-
-def render_result(console: Console, result: ScanResult) -> None:
-    """Plain terminal summary (Wave 0). Rich live table lands in P1-3."""
-    console.print(f"[bold]{result.banner}[/bold]")
-    console.print(
-        f"hosts up: {result.stats.hosts_up}  "
-        f"in-scope: {result.stats.targets_in_scope}  "
-        f"out-of-scope: {result.stats.targets_out_of_scope}  "
-        f"packets: {result.stats.packets_sent}"
-    )
-    for host in result.up_hosts:
-        ports = ", ".join(str(p) for p in host.open_ports) or "-"
-        console.print(f"  {host.ip:<16} {host.best_name:<24} ports[{ports}]")
+    """Return every available report writer keyed by format name."""
+    return all_writers()

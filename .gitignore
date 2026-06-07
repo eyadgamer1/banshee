@@ -17,7 +17,19 @@ output/
 *.audit.jsonl
 out.json
 dryrun.json
-*.sarif
+test-results/
+
+# internal / dev-only dirs (never publish)
+memory/
+.claude/
+graphify-out/
+TASKS.md
+
+# database & runtime
+*.db
+*.sqlite
+*.sqlite3
+*.jsonl
 
 # OS
 Thumbs.db

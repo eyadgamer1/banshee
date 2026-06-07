@@ -1,6 +1,7 @@
-banner: "AUTHORIZED TARGETS ONLY"
+banner: "AUTHORIZED TARGETS ONLY — loopback + RFC1918 default scope"
 
 allowlist:
+  # RFC1918 / loopback (default — do NOT add public IPs here without explicit authorization)
   - 127.0.0.1/8
   - 10.0.0.0/8
   - 172.16.0.0/12

@@ -1,8 +1,21 @@
 [project]
-name = "pythonprojectscanner"
-version = "0.1.0"
-description = "Passive-first network scanner — no exploitation"
+name = "banshee-scanner"
+version = "1.0.0"
+description = "BANSHEE — passive-first network scanner. No exploitation."
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
+keywords = ["network", "scanner", "security", "pentest", "passive", "fingerprinting"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: System :: Networking :: Monitoring",
+]
 dependencies = [
     "typer[all]>=0.12",
     "rich>=13",
@@ -17,7 +30,12 @@ dependencies = [
 ]
 
 [project.scripts]
-pps = "scanner.cli:app"
+banshee = "scanner.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/eyadgamer1/banshee"
+Repository = "https://github.com/eyadgamer1/banshee"
+"Bug Tracker" = "https://github.com/eyadgamer1/banshee/issues"
 
 [build-system]
 requires = ["hatchling"]

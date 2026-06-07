@@ -1,4 +1,4 @@
-"""CLI — `pps <targets> [flags]`. Typer + rich, nmap-style UX.
+"""BANSHEE CLI — `banshee <targets> [flags]`. Typer + rich, nmap-style UX.
 
 Two independent dials, never conflated:
   VERBOSITY  (how chatty):   -q / --silent / -v / --debug / --no-color
@@ -12,6 +12,7 @@ ScanEngine (A1), runs it, applies the confidence policy (C7), and emits output.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Annotated
 
@@ -23,13 +24,20 @@ from scanner.core.budget import StealthBudget
 from scanner.core.engine import ScanEngine
 from scanner.core.models import ScanConfig, ScanMode
 from scanner.core.scope import AuditLog, ScopeGuard, ScopeViolationError
+from scanner.correlate import build_attack_graph, build_segment_map
+from scanner.intel import enrich_result, prioritize_result
+from scanner.llm import generate_report, run_react_loop
+from scanner.plugins import run_plugins
+from scanner.ui import print_banner
 
 app = typer.Typer(
     add_completion=False,
     rich_markup_mode="rich",
     no_args_is_help=True,
-    help="[bold]pps[/bold] — passive-first network discovery, enumeration & reporting. "
-    "[dim]Scanning only; no exploitation.[/dim]",
+    help=(
+        "[bold red]BANSHEE[/bold red] — passive-first network discovery, "
+        "fingerprinting & risk reporting. [dim]No exploitation. Ever.[/dim]"
+    ),
 )
 
 # rich help panel group labels
@@ -44,7 +52,7 @@ _MAINT = "Maintenance"
 
 def _version_cb(value: bool) -> None:
     if value:
-        Console().print(f"pps {__version__}")
+        Console().print(f"banshee {__version__}")
         raise typer.Exit()
 
 
@@ -98,11 +106,15 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         int | None, typer.Option("--rate", help="max packets/sec", rich_help_panel=_INTENS)
     ] = None,
     timeout: Annotated[
-        int, typer.Option("--timeout", help="probe timeout (ms)", rich_help_panel=_INTENS)
-    ] = 3000,
+        int | None,
+        typer.Option("--timeout", help="probe timeout ms (default from -T)",
+                     rich_help_panel=_INTENS),
+    ] = None,
     retries: Annotated[
-        int, typer.Option("--retries", help="probe retries", rich_help_panel=_INTENS)
-    ] = 1,
+        int | None,
+        typer.Option("--retries", help="probe retries (default from -T)",
+                     rich_help_panel=_INTENS),
+    ] = None,
     threads: Annotated[
         int | None, typer.Option("--threads", help="max concurrency", rich_help_panel=_INTENS)
     ] = None,
@@ -147,7 +159,24 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         bool, typer.Option("--classify", help="device classification", rich_help_panel=_TOGGLES)
     ] = False,
     do_enrich: Annotated[
-        bool, typer.Option("--enrich", help="external intel enrichment", rich_help_panel=_TOGGLES)
+        bool,
+        typer.Option("--enrich", help="external intel enrichment (data leaves host)",
+                     rich_help_panel=_TOGGLES),
+    ] = False,
+    do_ssvc: Annotated[
+        bool,
+        typer.Option("--ssvc", help="SSVC priority tags on findings (local)",
+                     rich_help_panel=_TOGGLES),
+    ] = False,
+    do_agentic: Annotated[
+        bool,
+        typer.Option("--agentic", help="ReAct LLM analysis via local Ollama",
+                     rich_help_panel=_TOGGLES),
+    ] = False,
+    do_plugins: Annotated[
+        bool,
+        typer.Option("--plugins", help="apply YAML plugin rules from config/plugins/",
+                     rich_help_panel=_TOGGLES),
     ] = False,
     # --- safety ---
     scope_file: Annotated[
@@ -174,7 +203,19 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     ] = False,
 ) -> None:
     """Discover, fingerprint and report on in-scope network assets."""
+    # Verbosity dial → log level. --debug wins; --silent silences the library logs.
+    if debug:
+        log_level = logging.DEBUG
+    elif silent:
+        log_level = logging.CRITICAL
+    elif verbose >= 2:
+        log_level = logging.INFO
+    else:
+        log_level = logging.WARNING
+    logging.basicConfig(level=log_level, format="%(levelname)s %(name)s: %(message)s")
+
     console = Console(no_color=no_color, stderr=False)
+    print_banner(console, quiet=quiet, silent=silent)
 
     if not targets:
         console.print("[red]error:[/red] no targets given. See [bold]pps --help[/bold].")
@@ -224,28 +265,78 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         console.print(f"[red]error:[/red] scope file not found: {cfg.scope_file}")
         raise typer.Exit(code=2) from None
 
-    if not silent:
+    if not silent and not quiet:
         console.print(f"[bold yellow][!] {guard.banner}[/bold yellow]")
         console.print(f"[dim]mode={mode.value} -T{timing} fingerprint={do_fingerprint}[/dim]")
 
     budget = StealthBudget.from_config(cfg)
-    engine = ScanEngine(
-        scope=guard,
-        budget=budget,
-        discoverers=discovery.get_discoverers(cfg),
-        fingerprinters=fingerprint.get_fingerprinters(cfg) if do_fingerprint else [],
-    )
-
-    try:
-        result = asyncio.run(engine.run(cfg))
-    except ScopeViolationError as exc:
-        console.print(f"[red]scope violation:[/red] {exc}")
-        raise typer.Exit(code=3) from exc
+    live_enabled = not silent and not quiet and not dry_run and console.is_terminal
+    from scanner.report.live import live_dashboard
+    with live_dashboard(console, cfg, enabled=live_enabled) as progress_hook:
+        engine = ScanEngine(
+            scope=guard,
+            budget=budget,
+            discoverers=discovery.get_discoverers(cfg),
+            fingerprinters=fingerprint.get_fingerprinters(cfg) if do_fingerprint else [],
+            progress=progress_hook,
+        )
+        try:
+            result = asyncio.run(engine.run(cfg))
+        except ScopeViolationError as exc:
+            console.print(f"[red]scope violation:[/red] {exc}")
+            raise typer.Exit(code=3) from exc
 
     risk.tier_result(result)
 
+    # P3 — attack-path graph (always runs; attaches pivot findings)
+    attack_graph = build_attack_graph(result)
+    if not silent and attack_graph.edges:  # noqa: SIM102
+        n_pivots = len(attack_graph.pivot_targets())
+        console.print(
+            f"[dim]C1 attack graph: {len(attack_graph.edges)} edges, {n_pivots} pivots[/dim]"
+        )
+
+    # P4 — segment map (C2): group hosts by subnet, flag bridge hosts
+    seg_map = build_segment_map(result)
+    if not silent and seg_map.segments:
+        bridges = len(seg_map.bridges)
+        console.print(
+            f"[dim]C2 segment map: {len(seg_map.segments)} segments, {bridges} bridge hosts[/dim]"
+        )
+
+    # P3 — YAML plugin rules
+    if do_plugins:
+        n_plugin = run_plugins(result)
+        if not silent:
+            console.print(f"[dim]E1 plugins: {n_plugin} findings added[/dim]")
+
+    # P3 — external intel enrichment (data leaves host)
+    if do_enrich:
+        console.print(
+            "[bold yellow][!] --enrich: CVE IDs will be sent to FIRST.org and CISA. "
+            "Data leaves host.[/bold yellow]"
+        )
+        asyncio.run(enrich_result(result))
+
+    # P3 — SSVC prioritization (local, always safe)
+    if do_ssvc:
+        priorities = prioritize_result(result)
+        if not silent:
+            console.print(f"[dim]C5 SSVC: {len(priorities)} findings tagged[/dim]")
+
+    # P3 — agentic ReAct analysis + LLM report
+    if do_agentic:
+        if not silent:
+            console.print("[dim]D1 ReAct: running agentic analysis via Ollama...[/dim]")
+        analysis = asyncio.run(run_react_loop(result))
+        if not silent:
+            console.print(analysis)
+        llm_summary = asyncio.run(generate_report(result))
+        if not silent:
+            console.print("\n[bold]AI Executive Summary[/bold]\n" + llm_summary)
+
     if not silent:
-        report.render_result(console, result)
+        report.render_result(console, result, quiet=quiet)
 
     writers = report.get_writers()
     targets_map = {

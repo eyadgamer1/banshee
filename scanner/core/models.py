@@ -95,6 +95,7 @@ class Finding(BaseModel):
     evidence: str | None = None
     source: str = ""  # feature ID
     is_llm_inferred: bool = False  # if True, capped at POTENTIAL by policy
+    ssvc_priority: str | None = None  # C5 SSVC action tier (IMMEDIATE/OUT_OF_CYCLE/SCHEDULED/DEFER)
 
 
 class Host(BaseModel):
@@ -142,8 +143,10 @@ class ScanConfig(BaseModel):
     mode: ScanMode = ScanMode.PASSIVE
     timing: int = 3  # -T0..T5
     rate: int | None = None  # packets/sec cap
-    timeout_ms: int = 3000
-    retries: int = 1
+    # None => inherit from the -T timing template; an explicit value overrides it
+    # (0 is a legal override, e.g. --retries 0 at -T5).
+    timeout_ms: int | None = None
+    retries: int | None = None
     threads: int | None = None
     max_detect_risk: int | None = None  # 0 = passive only
 

@@ -1,0 +1,52 @@
+# BANSHEE Plugin Rule — Example
+# Place .yaml files in config/plugins/ and run with --plugins
+# Rules are matched against every host's services and OS guess.
+
+rules:
+  - id: PLUGIN-001
+    name: Telnet Detected
+    description: >
+      Cleartext Telnet (port 23) is active. All credentials and session data
+      are transmitted in plaintext and trivially interceptable.
+    severity: high
+    match:
+      port: 23
+      proto: tcp
+      state: open
+    tags: [cleartext, legacy, credential-exposure]
+
+  - id: PLUGIN-002
+    name: FTP in Cleartext
+    description: >
+      FTP (port 21) transmits credentials and data without encryption.
+      Replace with SFTP or FTPS.
+    severity: medium
+    match:
+      port: 21
+      proto: tcp
+      state: open
+    tags: [cleartext, legacy]
+
+  - id: PLUGIN-003
+    name: SNMP v1/v2 Exposed
+    description: >
+      SNMP (port 161 UDP) with community strings is unauthenticated by default.
+      An attacker can enumerate the full device MIB.
+    severity: high
+    match:
+      port: 161
+      proto: udp
+      state: open
+    tags: [snmp, recon, information-disclosure]
+
+  - id: PLUGIN-004
+    name: RDP Exposed to Network
+    description: >
+      Remote Desktop Protocol is reachable. Brute-force and credential-stuffing
+      attacks are common against internet-facing RDP.
+    severity: medium
+    match:
+      port: 3389
+      proto: tcp
+      state: open
+    tags: [rdp, remote-access, brute-force-risk]

@@ -16,8 +16,8 @@ from datetime import UTC, datetime
 
 from scanner.core.budget import StealthBudget
 from scanner.core.interfaces import AuditLogger, Discoverer, Fingerprinter
-from scanner.core.models import Host, HostState, ScanConfig, ScanResult
-from scanner.core.scope import ScopeGuard
+from scanner.core.models import Host, HostState, ScanConfig, ScanResult, Service
+from scanner.core.scope import ScopeGuard, ScopeViolationError
 
 ProgressHook = Callable[[str, dict[str, object]], None]
 
@@ -147,6 +147,18 @@ class ScanEngine:
         result.stats.targets_out_of_scope = len(out_scope)
         self._emit("scope", in_scope=len(in_scope), out_of_scope=len(out_scope))
 
+        # Contract (E5): if every resolved target is out of scope, this is an explicit
+        # attempt to scan unauthorized hosts — refuse loudly rather than silently scan
+        # nothing. A partial CIDR overlap (some in-scope) still proceeds on the allowed
+        # subset; an all-DNS-failure (nothing resolved) yields an empty result, not a
+        # violation.
+        if expanded and not in_scope:
+            self.scope.audit.log("scope_violation", out_of_scope=out_scope[:10])
+            raise ScopeViolationError(
+                ", ".join(out_scope[:3]) + ("..." if len(out_scope) > 3 else ""),
+                "no requested target is inside the scope allowlist",
+            )
+
         if len(in_scope) > self.scope.max_hosts_per_scan:
             self.scope.audit.log(
                 "host_cap", requested=len(in_scope), cap=self.scope.max_hosts_per_scan
@@ -201,13 +213,33 @@ class ScanEngine:
 
     @staticmethod
     def _merge(into: Host, other: Host) -> None:
-        """Fold a duplicate discovery of the same IP into the existing host."""
+        """Fold a duplicate discovery of the same IP into the existing host.
+
+        Services and findings are de-duplicated so that two discoverers seeing the
+        same IP (e.g. the passive sniffer and the TCP sweep both reporting :80) do
+        not inflate service/finding counts or list a port twice.
+        """
         if other.state == HostState.UP:
             into.state = HostState.UP
         into.mac = into.mac or other.mac
         into.hostname = into.hostname or other.hostname
         into.vendor = into.vendor or other.vendor
-        into.names.update(other.names)
-        into.services.extend(other.services)
-        into.findings.extend(other.findings)
+        into.os_guess = into.os_guess or other.os_guess
+        into.device_type = into.device_type or other.device_type
+        # names: keep existing keys, only add new ones (don't clobber stronger sources)
+        for key, value in other.names.items():
+            into.names.setdefault(key, value)
+        _merge_services(into, other.services)
+        seen_findings = {f.id for f in into.findings}
+        into.findings.extend(f for f in other.findings if f.id not in seen_findings)
         into.last_seen = _utcnow()
+
+
+def _merge_services(into: Host, incoming: list[Service]) -> None:
+    """Add services from `incoming` not already present, keyed by (port, proto)."""
+    existing = {(s.port, s.proto) for s in into.services}
+    for svc in incoming:
+        key = (svc.port, svc.proto)
+        if key not in existing:
+            into.services.append(svc)
+            existing.add(key)

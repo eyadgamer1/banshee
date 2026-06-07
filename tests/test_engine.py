@@ -1,67 +1,50 @@
-"""A1 engine tests — target expansion, dry-run safety, DI pipeline."""
+"""A1 ScanEngine — target expansion, scope filtering, merge dedup, pipeline."""
 
 from __future__ import annotations
 
 import pytest
 
-from scanner.core.budget import StealthBudget
 from scanner.core.engine import ScanEngine, expand_target
-from scanner.core.interfaces import ScanContext
-from scanner.core.models import Host, HostState, ScanConfig, ScanMode, Service
-from scanner.core.scope import AuditLog, ScopeGuard
+from scanner.core.models import (
+    Finding,
+    Host,
+    HostState,
+    PortState,
+    Proto,
+    ScanConfig,
+    ScanMode,
+    Service,
+)
+from scanner.core.scope import ScopeViolationError
+
+from .conftest import make_budget, make_scope
+
+# ----- expand_target ---------------------------------------------------------
 
 
-class FakeDiscoverer:
-    name = "fake-disc"
-    feature_id = "TEST"
-
-    def __init__(self, up: set[str]) -> None:
-        self.up = up
-        self.seen: list[str] = []
-
-    async def discover(self, targets: list[str], ctx: ScanContext) -> list[Host]:
-        self.seen = list(targets)
-        return [Host(ip=ip, state=HostState.UP) for ip in targets if ip in self.up]
-
-
-class FakeFingerprinter:
-    name = "fake-fp"
-    feature_id = "TEST"
-
-    def __init__(self) -> None:
-        self.hits: list[str] = []
-
-    async def fingerprint(self, host: Host, ctx: ScanContext) -> Host:
-        self.hits.append(host.ip)
-        host.services.append(Service(port=80, name="http", source="TEST"))
-        host.hostname = "fake.lan"
-        return host
-
-
-def _guard() -> ScopeGuard:
-    return ScopeGuard(allowlist=["127.0.0.0/8", "10.0.0.0/8"], audit=AuditLog(None))
-
-
-def _engine(cfg: ScanConfig, disc: FakeDiscoverer, fp: FakeFingerprinter) -> ScanEngine:
-    return ScanEngine(_guard(), StealthBudget.from_config(cfg), [disc], [fp])
-
-
-# --- target expansion ---
-
-
-def test_expand_cidr() -> None:
-    assert expand_target("10.0.0.0/30") == ["10.0.0.1", "10.0.0.2"]
-
-
-def test_expand_single_ip() -> None:
+def test_expand_single_ip():
     assert expand_target("10.0.0.5") == ["10.0.0.5"]
 
 
-def test_expand_last_octet_range() -> None:
-    assert expand_target("10.0.0.5-7") == ["10.0.0.5", "10.0.0.6", "10.0.0.7"]
+def test_expand_cidr():
+    out = expand_target("10.0.0.0/30")
+    assert out == ["10.0.0.1", "10.0.0.2"]
 
 
-def test_expand_full_range() -> None:
+def test_expand_cidr_31_point_to_point():
+    # RFC 3021: a /31 has two usable point-to-point addresses.
+    assert expand_target("10.0.0.0/31") == ["10.0.0.0", "10.0.0.1"]
+
+
+def test_expand_cidr_32_single_address():
+    assert expand_target("10.0.0.5/32") == ["10.0.0.5"]
+
+
+def test_expand_last_octet_range():
+    assert expand_target("10.0.0.10-12") == ["10.0.0.10", "10.0.0.11", "10.0.0.12"]
+
+
+def test_expand_full_range():
     assert expand_target("10.0.0.254-10.0.1.1") == [
         "10.0.0.254",
         "10.0.0.255",
@@ -70,42 +53,164 @@ def test_expand_full_range() -> None:
     ]
 
 
-def test_expand_hostname_passthrough() -> None:
+def test_expand_inverted_range_returned_as_is():
+    assert expand_target("10.0.0.20-10") == ["10.0.0.20-10"]
+
+
+def test_expand_hostname_passthrough():
     assert expand_target("host.lan") == ["host.lan"]
 
 
-# --- pipeline ---
+def test_expand_empty_token():
+    assert expand_target("   ") == []
+
+
+# ----- fakes -----------------------------------------------------------------
+
+
+class FakeDiscoverer:
+    name = "fake-disc"
+    feature_id = "FAKE"
+
+    def __init__(self, hosts: list[Host]) -> None:
+        self._hosts = hosts
+
+    async def discover(self, targets, ctx):  # noqa: ANN001
+        return [h for h in self._hosts if h.ip in set(targets)]
+
+
+class TagFingerprinter:
+    name = "tag-fp"
+    feature_id = "TAG"
+
+    async def fingerprint(self, host: Host, ctx):  # noqa: ANN001
+        host.os_guess = host.os_guess or "TaggedOS"
+        return host
+
+
+def engine(discoverers, fingerprinters=(), scope=None, budget=None):
+    return ScanEngine(
+        scope=scope or make_scope(),
+        budget=budget or make_budget(mode=ScanMode.NORMAL, timing=4),
+        discoverers=list(discoverers),
+        fingerprinters=list(fingerprinters),
+    )
+
+
+# ----- run() -----------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_dry_run_sends_nothing() -> None:
-    cfg = ScanConfig(targets=["10.0.0.0/30"], mode=ScanMode.NORMAL, dry_run=True)
-    disc, fp = FakeDiscoverer(up={"10.0.0.1"}), FakeFingerprinter()
-    result = await _engine(cfg, disc, fp).run(cfg)
-    assert disc.seen == []  # discoverer never called
-    assert fp.hits == []
-    assert result.stats.packets_sent == 0
-    assert len(result.hosts) == 2  # planned, state unknown
+async def test_run_discovers_and_fingerprints():
+    host = Host(ip="10.0.0.5", state=HostState.UP)
+    eng = engine([FakeDiscoverer([host])], [TagFingerprinter()])
+    result = await eng.run(ScanConfig(targets=["10.0.0.5"], mode=ScanMode.NORMAL, fingerprint=True))
+    assert result.stats.hosts_up == 1
+    assert result.hosts[0].os_guess == "TaggedOS"
+
+
+@pytest.mark.asyncio
+async def test_run_filters_out_of_scope_silently_when_some_in_scope():
+    h1 = Host(ip="10.0.0.5", state=HostState.UP)
+    eng = engine([FakeDiscoverer([h1])])
+    # 8.8.8.8 is out of scope but 10.0.0.5 is in scope -> proceed on the subset
+    result = await eng.run(ScanConfig(targets=["10.0.0.5", "8.8.8.8"], mode=ScanMode.NORMAL))
+    assert result.stats.targets_in_scope == 1
+    assert result.stats.targets_out_of_scope == 1
+    assert [h.ip for h in result.hosts] == ["10.0.0.5"]
+
+
+@pytest.mark.asyncio
+async def test_run_raises_when_all_targets_out_of_scope():
+    eng = engine([FakeDiscoverer([])])
+    with pytest.raises(ScopeViolationError):
+        await eng.run(ScanConfig(targets=["8.8.8.8"], mode=ScanMode.NORMAL))
+
+
+@pytest.mark.asyncio
+async def test_dry_run_plans_without_discovering():
+    called = {"discover": False}
+
+    class Spy(FakeDiscoverer):
+        async def discover(self, targets, ctx):  # noqa: ANN001
+            called["discover"] = True
+            return []
+
+    eng = engine([Spy([])])
+    result = await eng.run(ScanConfig(targets=["10.0.0.1", "10.0.0.2"], dry_run=True))
+    assert called["discover"] is False
+    assert len(result.hosts) == 2
     assert all(h.state == HostState.UNKNOWN for h in result.hosts)
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_discovers_and_fingerprints() -> None:
-    cfg = ScanConfig(targets=["10.0.0.0/29"], mode=ScanMode.NORMAL)
-    disc, fp = FakeDiscoverer(up={"10.0.0.1", "10.0.0.3"}), FakeFingerprinter()
-    result = await _engine(cfg, disc, fp).run(cfg)
-    assert result.stats.hosts_up == 2
-    assert sorted(fp.hits) == ["10.0.0.1", "10.0.0.3"]
-    up = result.up_hosts
-    assert all(h.hostname == "fake.lan" for h in up)
-    assert all(80 in h.open_ports for h in up)
+async def test_dry_run_out_of_scope_still_raises():
+    eng = engine([FakeDiscoverer([])])
+    with pytest.raises(ScopeViolationError):
+        await eng.run(ScanConfig(targets=["8.8.8.8"], dry_run=True))
 
 
 @pytest.mark.asyncio
-async def test_out_of_scope_filtered_before_discovery() -> None:
-    cfg = ScanConfig(targets=["10.0.0.1", "8.8.8.8"], mode=ScanMode.NORMAL)
-    disc, fp = FakeDiscoverer(up={"10.0.0.1"}), FakeFingerprinter()
-    result = await _engine(cfg, disc, fp).run(cfg)
-    assert "8.8.8.8" not in disc.seen
-    assert result.stats.targets_out_of_scope == 1
-    assert result.stats.targets_in_scope == 1
+async def test_duplicate_ip_merge_dedupes_services():
+    # Two discoverers report the same IP and the same port 80 -> one service only.
+    h_a = Host(
+        ip="10.0.0.5",
+        state=HostState.UP,
+        services=[Service(port=80, proto=Proto.TCP, state=PortState.OPEN)],
+    )
+    h_b = Host(
+        ip="10.0.0.5",
+        state=HostState.UP,
+        services=[
+            Service(port=80, proto=Proto.TCP, state=PortState.OPEN),  # duplicate
+            Service(port=443, proto=Proto.TCP, state=PortState.OPEN),  # new
+        ],
+    )
+    eng = engine([FakeDiscoverer([h_a]), FakeDiscoverer([h_b])])
+    result = await eng.run(ScanConfig(targets=["10.0.0.5"], mode=ScanMode.NORMAL))
+    merged = result.hosts[0]
+    assert merged.open_ports == [80, 443]
+    assert result.stats.services_found == 2  # not 3
+
+
+@pytest.mark.asyncio
+async def test_duplicate_ip_merge_dedupes_findings():
+    f = Finding(id="DUP-1", title="dup")
+    h_a = Host(ip="10.0.0.5", state=HostState.UP, findings=[f])
+    h_b = Host(ip="10.0.0.5", state=HostState.UP, findings=[f.model_copy()])
+    eng = engine([FakeDiscoverer([h_a]), FakeDiscoverer([h_b])])
+    result = await eng.run(ScanConfig(targets=["10.0.0.5"], mode=ScanMode.NORMAL))
+    assert result.stats.findings == 1
+
+
+@pytest.mark.asyncio
+async def test_run_dedupes_expanded_targets():
+    h = Host(ip="10.0.0.1", state=HostState.UP)
+    eng = engine([FakeDiscoverer([h])])
+    # overlapping CIDR + explicit IP both yield 10.0.0.1
+    result = await eng.run(ScanConfig(targets=["10.0.0.1", "10.0.0.0/30"], mode=ScanMode.NORMAL))
+    assert result.stats.targets_requested == 2  # 10.0.0.1 and 10.0.0.2, de-duped
+
+
+@pytest.mark.asyncio
+async def test_host_cap_truncates():
+    scope = make_scope()
+    scope.max_hosts_per_scan = 1
+    h1 = Host(ip="10.0.0.1", state=HostState.UP)
+    h2 = Host(ip="10.0.0.2", state=HostState.UP)
+    eng = engine([FakeDiscoverer([h1, h2])], scope=scope)
+    result = await eng.run(ScanConfig(targets=["10.0.0.0/30"], mode=ScanMode.NORMAL))
+    # The cap truncates the *scanned* set to 1 host (the stat still reports the
+    # full in-scope count, which is the intended distinction).
+    assert len(result.hosts) == 1
+
+
+@pytest.mark.asyncio
+async def test_packets_sent_recorded_from_budget():
+    budget = make_budget(mode=ScanMode.NORMAL, timing=5)
+    h = Host(ip="10.0.0.5", state=HostState.UP)
+    eng = engine([FakeDiscoverer([h])], budget=budget)
+    # simulate the discoverer having sent packets
+    await budget.throttle()
+    result = await eng.run(ScanConfig(targets=["10.0.0.5"], mode=ScanMode.NORMAL))
+    assert result.stats.packets_sent >= 1

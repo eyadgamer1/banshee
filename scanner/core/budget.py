@@ -67,12 +67,16 @@ class StealthBudget:
         if cfg.threads is not None:
             concurrency = max(1, cfg.threads) if allow_active else 0
 
+        # An explicit CLI value (incl. 0) overrides the template; None inherits it.
+        connect_timeout = cfg.timeout_ms if cfg.timeout_ms is not None else base_timeout
+        retries = cfg.retries if cfg.retries is not None else base_retries
+
         return cls(
             allow_active_probes=allow_active,
             concurrency=concurrency,
             delay_ms=base_delay,
-            connect_timeout_ms=cfg.timeout_ms if cfg.timeout_ms else base_timeout,
-            retries=cfg.retries if cfg.retries else base_retries,
+            connect_timeout_ms=max(0, connect_timeout),
+            retries=max(0, retries),
             rate_pps=cfg.rate,
             max_packets=None,
             detect_risk=risk,

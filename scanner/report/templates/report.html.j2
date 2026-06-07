@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pps scan report</title>
+<style>
+  :root { --bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;--green:#3fb950;--yellow:#d29922;--red:#f85149;--blue:#58a6ff; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,monospace;font-size:14px;line-height:1.5;padding:24px}
+  header{border-bottom:1px solid var(--border);padding-bottom:16px;margin-bottom:24px}
+  header h1{font-size:18px;font-weight:600;color:var(--yellow);letter-spacing:.5px}
+  header .meta{color:var(--muted);font-size:12px;margin-top:6px}
+  .stats{display:flex;gap:24px;margin-bottom:24px;flex-wrap:wrap}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px 20px}
+  .stat .val{font-size:28px;font-weight:700;color:var(--blue)}
+  .stat .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  section{margin-bottom:32px}
+  section h2{font-size:14px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px}
+  table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+  th{background:#1c2128;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:8px 12px;text-align:left;border-bottom:1px solid var(--border)}
+  td{padding:8px 12px;border-bottom:1px solid var(--border);font-family:monospace;font-size:13px}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:#1c2128}
+  .confirmed{color:var(--green)}.probable{color:var(--yellow)}.potential{color:var(--muted)}
+  .sev-critical{color:#ff4d4d;font-weight:700}.sev-high{color:var(--red)}.sev-medium{color:var(--yellow)}.sev-low{color:var(--blue)}.sev-info{color:var(--muted)}
+  .tag{display:inline-block;padding:1px 6px;border-radius:10px;font-size:11px;background:#1c2128;border:1px solid var(--border)}
+  .empty{color:var(--muted);padding:20px 12px}
+  footer{color:var(--muted);font-size:11px;margin-top:40px;border-top:1px solid var(--border);padding-top:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>{{ result.banner }}</h1>
+  <div class="meta">
+    mode: {{ result.config.mode.value }} &nbsp;|&nbsp;
+    started: {{ result.started_at.isoformat(timespec='seconds') }}
+    {% if result.finished_at %} &nbsp;|&nbsp; finished: {{ result.finished_at.isoformat(timespec='seconds') }}{% endif %}
+    &nbsp;|&nbsp; packets sent: {{ result.stats.packets_sent }}
+  </div>
+</header>
+
+<div class="stats">
+  <div class="stat"><div class="val">{{ result.stats.hosts_up }}</div><div class="lbl">Hosts Up</div></div>
+  <div class="stat"><div class="val">{{ result.stats.services_found }}</div><div class="lbl">Services</div></div>
+  <div class="stat"><div class="val">{{ result.stats.findings }}</div><div class="lbl">Findings</div></div>
+  <div class="stat"><div class="val">{{ result.stats.targets_in_scope }}</div><div class="lbl">In Scope</div></div>
+  <div class="stat"><div class="val" style="color:var(--muted)">{{ result.stats.targets_out_of_scope }}</div><div class="lbl">Out of Scope</div></div>
+</div>
+
+<section>
+  <h2>Hosts</h2>
+  {% if result.hosts %}
+  <table>
+    <thead>
+      <tr><th>IP</th><th>Name</th><th>MAC</th><th>Vendor</th><th>OS</th><th>Open Ports</th><th>Confidence</th></tr>
+    </thead>
+    <tbody>
+      {% for host in result.hosts %}
+      <tr>
+        <td>{{ host.ip }}</td>
+        <td>{{ host.best_name }}</td>
+        <td>{{ host.mac or '' }}</td>
+        <td>{{ host.vendor or '' }}</td>
+        <td>{{ host.os_guess or '' }}</td>
+        <td>{% for p in host.open_ports %}<span class="tag">{{ p }}</span> {% endfor %}</td>
+        <td class="{{ host.confidence.value }}">{{ host.confidence.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">(no live hosts)</div>
+  {% endif %}
+</section>
+
+{% set all_findings = namespace(items=[]) %}
+{% for host in result.hosts %}{% for f in host.findings %}{% set all_findings.items = all_findings.items + [(host, f)] %}{% endfor %}{% endfor %}
+{% if all_findings.items %}
+<section>
+  <h2>Findings</h2>
+  <table>
+    <thead>
+      <tr><th>Host</th><th>Severity</th><th>Title</th><th>Confidence</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      {% for host, f in all_findings.items %}
+      <tr>
+        <td>{{ host.ip }}</td>
+        <td class="sev-{{ f.severity.value }}">{{ f.severity.value }}</td>
+        <td>{{ f.title }}</td>
+        <td class="{{ f.confidence.value }}">{{ f.confidence.value }}</td>
+        <td>{{ f.description }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<footer>pps &mdash; passive-first network scanner &mdash; authorized targets only</footer>
+</body>
+</html>
