@@ -1,30 +1,24 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
 | Version | Supported |
 |---------|-----------|
 | 1.x     | Yes       |
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-**Do not open a public GitHub issue for security vulnerabilities.**
+Don't open a public issue for security bugs.
 
 Email: eyadyasser4002@gmail.com
 
-Include:
-- BANSHEE version (`banshee --version`)
-- Description of the vulnerability
-- Steps to reproduce
-- Potential impact
+Include the version (`banshee --version`), what you found, steps to reproduce, and the potential impact. I'll respond within 72 hours and push a fix within 14 days if it's confirmed.
 
-You will receive a response within 72 hours. If confirmed, a patch will be released within 14 days.
+## Hard limits in the codebase
 
-## Security Constraints (Hard-Coded)
+These can't be configured away:
 
-These are invariants in the codebase, not configuration options. PRs that weaken them will be rejected:
-
-1. **Scope guard** — `ScopeViolationError` is always raised for out-of-scope targets. It cannot be disabled.
-2. **No exploitation** — The engine emits findings only. No payload generation, no shellcode, no weaponized output.
-3. **External data opt-in** — `--enrich` is the only flag that contacts external APIs. It is off by default and shows a loud warning when enabled.
-4. **No credential logging** — The audit trail records IPs and events only. Keys, passwords, and PII are never written to disk.
+- `ScopeViolationError` is always raised for out-of-scope targets
+- No payload generation, no shellcode, no active attack capability
+- `--enrich` is the only feature that contacts external servers — it's opt-in and shows a warning
+- Credentials, keys, and PII are never written to the audit log
