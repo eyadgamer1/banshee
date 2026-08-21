@@ -22,10 +22,15 @@ test-results/
 # internal / dev-only dirs (never publish)
 memory/
 .claude/
+.mcp.json
 graphify-out/
 TASKS.md
-tests/
-uv.lock
+
+# NOTE: tests/ and uv.lock are deliberately NOT ignored.
+# For a security scanner the test suite is the credibility proof — without it a
+# user has no way to check that the tool does not fabricate results. See
+# tests/test_ground_truth.py, which binds real listeners and asserts the reported
+# ports match reality exactly. The lockfile is committed so CI is reproducible.
 
 # database & runtime
 *.db

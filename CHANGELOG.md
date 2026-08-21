@@ -1,5 +1,58 @@
 # Changelog
 
+## [1.0.1] — 2026-08-21
+
+Integration release. Three features shipped in 1.0.0 were implemented, tested and
+documented but never connected to the CLI, so no user could reach them. This closes
+that gap and adds end-to-end tests that drive the real CLI rather than the modules.
+
+### Fixed
+
+- **Plugin rules never loaded.** The loader required a top-level `id` per file while
+  the shipped `example.yaml` nested rules under `rules:`, so `--plugins` was a
+  guaranteed no-op. The loader now accepts both file shapes and the shipped rule pack
+  parses. A test asserts the on-disk rules load.
+- **SQLite persistence and rogue detection were unreachable.** Added `--db PATH` and
+  `--baseline`. The MAC baseline is read before the run is written, so a host no longer
+  matches itself.
+- **Confidence policy ran before the passes that create findings.** `risk.tier_result`
+  now runs after plugins, enrichment, SSVC, rogue detection and the agentic stage. The
+  guarantee that LLM-inferred findings can never exceed POTENTIAL was previously
+  bypassed by ordering.
+- **Oversized targets exhausted memory.** A single target larger than
+  `max_hosts_per_scan` is now refused with `TargetTooLargeError` (exit code 2) after an
+  arithmetic size check, instead of materialising the address list — `10.0.0.0/8`
+  previously built a 16.7-million-element list before any cap applied.
+- **`config/settings.toml` was read by nothing.** It now backs the LLM model, base URL
+  and timeout; unread keys were removed. The hardcoded `llama3` no longer silently
+  overrides the configured model.
+- **Rogue detection missed MACs stored in a different case.** Baseline lookups are
+  normalised to lower case.
+- **Crashed on a default Windows console.** The block-drawing startup banner raised
+  `UnicodeEncodeError` on cp1252 before the scan began, so every invocation failed
+  unless `PYTHONIOENCODING=utf-8` was set. An ASCII banner is used when the console
+  encoding cannot represent the block glyphs.
+- ReAct loop opened a new HTTP session per iteration; now one session per analysis.
+- Four `asyncio.run()` calls per invocation collapsed into one event loop.
+- README timing table listed delays that did not match `budget.py`; scope example used
+  `allow:`/`deny:` instead of the real `allowlist:`/`denylist:`.
+
+### Added
+
+- `--ports` / `-p` — nmap-style port selection (`22,80,443` or `1-1024`). Previously
+  there was no way to choose ports at all.
+- Ground-truth test suite: binds real listeners on loopback, runs the real CLI, and
+  asserts the reported ports equal the bound ports exactly — including the negative
+  direction, that an unbound port is never reported open.
+- Analysis toggles (`ssvc`, `plugins`, `agentic`, `classify`, `ports`, `db`) are now
+  recorded in the serialised config, so a report consumer can tell "clean" from
+  "that pass never ran".
+
+### Changed
+
+- `--classify` now defaults on. It is local and costs zero packets, and four downstream
+  features silently degraded without it.
+
 ## [1.0.0] — 2025-06-07
 
 First public release.

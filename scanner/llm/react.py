@@ -22,9 +22,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "llama3"
 _MAX_ITER = 10
-_OLLAMA_URL = "http://localhost:11434/api/chat"
 
 # ── Read-only tool definitions exposed to the LLM ────────────────────────────
 
@@ -110,7 +108,7 @@ Rules:
 """
 
 
-async def run_react_loop(result: ScanResult, model: str = _DEFAULT_MODEL) -> str:
+async def run_react_loop(result: ScanResult, model: str | None = None) -> str:
     """Run the ReAct loop against `result`. Returns final analysis text."""
     try:
         import aiohttp
@@ -118,58 +116,66 @@ async def run_react_loop(result: ScanResult, model: str = _DEFAULT_MODEL) -> str
         log.warning("aiohttp not installed — D1 ReAct loop unavailable")
         return _static_summary(result)
 
+    from scanner.core.settings import load_settings
+
+    settings = load_settings()
+    model = model or settings.llm_model
+    url = settings.ollama_chat_url
+    timeout = aiohttp.ClientTimeout(total=settings.llm_timeout_seconds)
+
     messages: list[dict[str, str]] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": "Analyse this scan result and provide a risk assessment."},
     ]
 
-    for iteration in range(_MAX_ITER):
-        try:
-            async with aiohttp.ClientSession() as session:
+    # One session for the whole loop — the previous per-iteration session cost up
+    # to ten connection setups for a single analysis.
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for iteration in range(_MAX_ITER):
                 payload = {"model": model, "messages": messages, "stream": False}
-                timeout = aiohttp.ClientTimeout(total=60)
-                async with session.post(_OLLAMA_URL, json=payload, timeout=timeout) as resp:
+                async with session.post(url, json=payload) as resp:
                     if resp.status != 200:
                         log.warning("Ollama returned %d", resp.status)
                         break
                     data = await resp.json()
                     assistant_text: str = data["message"]["content"]
-        except Exception as exc:
-            log.warning("Ollama unreachable: %s", exc)
-            return _static_summary(result)
 
-        messages.append({"role": "assistant", "content": assistant_text})
+                messages.append({"role": "assistant", "content": assistant_text})
 
-        # Check for Final Answer
-        if "Final Answer:" in assistant_text:
-            idx = assistant_text.index("Final Answer:")
-            return assistant_text[idx + len("Final Answer:"):].strip()
+                # Check for Final Answer
+                if "Final Answer:" in assistant_text:
+                    idx = assistant_text.index("Final Answer:")
+                    return assistant_text[idx + len("Final Answer:"):].strip()
 
-        # Parse Action line
-        action_match = re.search(r"Action:\s*(\w+)\(([^)]*)\)", assistant_text)
-        if not action_match:
-            # No action — treat as done
-            return assistant_text.strip()
+                # Parse Action line
+                action_match = re.search(r"Action:\s*(\w+)\(([^)]*)\)", assistant_text)
+                if not action_match:
+                    # No action — treat as done
+                    return assistant_text.strip()
 
-        tool_name = action_match.group(1)
-        args_str = action_match.group(2).strip()
-        kwargs: dict[str, str] = {}
-        for part in args_str.split(","):
-            part = part.strip()
-            if "=" in part:
-                k, v = part.split("=", 1)
-                kwargs[k.strip()] = v.strip().strip("\"'")
+                tool_name = action_match.group(1)
+                args_str = action_match.group(2).strip()
+                kwargs: dict[str, str] = {}
+                for part in args_str.split(","):
+                    part = part.strip()
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        kwargs[k.strip()] = v.strip().strip("\"'")
 
-        if tool_name not in _TOOLS:
-            observation = f"Unknown tool: {tool_name}. Available: {list(_TOOLS)}"
-        else:
-            try:
-                observation = _TOOLS[tool_name](result, **kwargs)
-            except Exception as exc:
-                observation = f"Tool error: {exc}"
+                if tool_name not in _TOOLS:
+                    observation = f"Unknown tool: {tool_name}. Available: {list(_TOOLS)}"
+                else:
+                    try:
+                        observation = _TOOLS[tool_name](result, **kwargs)
+                    except Exception as exc:
+                        observation = f"Tool error: {exc}"
 
-        messages.append({"role": "user", "content": f"Observation: {observation}"})
-        log.debug("D1 iter %d: %s → %d chars", iteration + 1, tool_name, len(observation))
+                messages.append({"role": "user", "content": f"Observation: {observation}"})
+                log.debug("D1 iter %d: %s -> %d chars", iteration + 1, tool_name, len(observation))
+    except Exception as exc:
+        log.warning("Ollama unreachable: %s", exc)
+        return _static_summary(result)
 
     return _static_summary(result)
 

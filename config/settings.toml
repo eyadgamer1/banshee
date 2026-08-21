@@ -1,18 +1,13 @@
+# Defaults beneath CLI flags. Read by scanner/core/settings.py.
+# Every key here is consumed by a real call site — do not add unread keys.
+
 [llm]
-backend = "ollama"
-model = "mistral-nemo"
+# Used by --agentic (D1 ReAct loop and D4 report). Must be a model your local
+# Ollama has pulled: `ollama pull <model>`.
+model = "llama3"
 base_url = "http://localhost:11434"
 timeout_seconds = 60
-max_retries = 3
-
-[scan]
-default_timeout = 5.0
-stealth_delay_ms = 200
-max_concurrent_probes = 50
 
 [store]
-db_path = "output/pps.db"
-
-[report]
-output_dir = "output"
-formats = ["json", "markdown"]
+# Default for --db. Pass --db PATH to override; omit both to disable persistence.
+db_path = "output/banshee.db"

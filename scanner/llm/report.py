@@ -17,8 +17,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "llama3"
-_OLLAMA_URL = "http://localhost:11434/api/chat"
 
 _PROMPT_TEMPLATE = """\
 You are a senior network security analyst. Write an executive summary report for the
@@ -67,7 +65,7 @@ def _build_scan_data(result: ScanResult) -> str:
     return "\n".join(ln for ln in lines if ln)
 
 
-async def generate_report(result: ScanResult, model: str = _DEFAULT_MODEL) -> str:
+async def generate_report(result: ScanResult, model: str | None = None) -> str:
     """Generate executive report. Returns Markdown string."""
     scan_data = _build_scan_data(result)
     prompt = _PROMPT_TEMPLATE.format(scan_data=scan_data)
@@ -78,16 +76,25 @@ async def generate_report(result: ScanResult, model: str = _DEFAULT_MODEL) -> st
         log.warning("aiohttp not installed — D4 report generation unavailable")
         return _fallback_report(result)
 
+    from scanner.core.settings import load_settings
+
+    settings = load_settings()
+    model = model or settings.llm_model
+
     messages = [
         {"role": "system", "content": "You are a professional network security analyst."},
         {"role": "user", "content": prompt},
     ]
 
     try:
-        timeout = aiohttp.ClientTimeout(total=120)
+        # Report generation is one long completion, not a loop — allow more than
+        # the per-call chat timeout.
+        timeout = aiohttp.ClientTimeout(total=settings.llm_timeout_seconds * 2)
         async with aiohttp.ClientSession() as session:
             payload = {"model": model, "messages": messages, "stream": False}
-            async with session.post(_OLLAMA_URL, json=payload, timeout=timeout) as resp:
+            async with session.post(
+                settings.ollama_chat_url, json=payload, timeout=timeout
+            ) as resp:
                 if resp.status != 200:
                     log.warning("Ollama returned HTTP %d for report generation", resp.status)
                     return _fallback_report(result)

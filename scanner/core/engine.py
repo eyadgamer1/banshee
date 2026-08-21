@@ -47,12 +47,33 @@ class RunContext:
         return self._audit
 
 
-def expand_target(token: str) -> list[str]:
+class TargetTooLargeError(Exception):
+    """Raised when a single target token would expand past the host cap.
+
+    Refusing is deliberate: silently truncating a /8 would scan an arbitrary
+    1024-address slice of a range the operator plainly did not mean to request.
+    """
+
+    def __init__(self, token: str, size: int, limit: int) -> None:
+        self.token = token
+        self.size = size
+        self.limit = limit
+        super().__init__(
+            f"{token} expands to {size:,} addresses, over the max_hosts_per_scan "
+            f"limit of {limit:,}. Narrow the target or raise the cap in scope.yaml."
+        )
+
+
+def expand_target(token: str, limit: int | None = None) -> list[str]:
     """Expand one target token into concrete IP strings.
 
     Supports: single IP, CIDR (1.2.3.0/24), last-octet range (1.2.3.10-20),
     and full range (1.2.3.10-1.2.3.20). Hostnames are returned as-is for the
     async resolver step. Never performs network I/O.
+
+    `limit` caps how many addresses one token may yield. The size is computed
+    arithmetically and checked *before* the list is built, so an oversized range
+    raises TargetTooLargeError instead of materialising millions of strings.
     """
     token = token.strip()
     if not token:
@@ -61,9 +82,12 @@ def expand_target(token: str) -> list[str]:
     if "/" in token:
         try:
             net = ipaddress.ip_network(token, strict=False)
-            return [str(ip) for ip in net.hosts()] or [str(net.network_address)]
         except ValueError:
             return [token]
+        # num_addresses is arithmetic — never enumerates. Check before building.
+        if limit is not None and net.num_addresses > limit:
+            raise TargetTooLargeError(token, net.num_addresses, limit)
+        return [str(ip) for ip in net.hosts()] or [str(net.network_address)]
     # range
     if "-" in token:
         left, right = token.rsplit("-", 1)
@@ -76,9 +100,12 @@ def expand_target(token: str) -> list[str]:
                 end = ipaddress.ip_address(f"{prefix}.{right}")
             if int(end) < int(start):
                 return [token]
-            return [str(ipaddress.ip_address(i)) for i in range(int(start), int(end) + 1)]
         except ValueError:
             return [token]
+        size = int(end) - int(start) + 1
+        if limit is not None and size > limit:
+            raise TargetTooLargeError(token, size, limit)
+        return [str(ipaddress.ip_address(i)) for i in range(int(start), int(end) + 1)]
     return [token]
 
 
@@ -130,7 +157,7 @@ class ScanEngine:
 
         expanded: list[str] = []
         for tok in cfg.targets:
-            expanded.extend(expand_target(tok))
+            expanded.extend(expand_target(tok, limit=self.scope.max_hosts_per_scan))
         expanded = await self._resolve(expanded)
         # de-dup, preserve order
         seen: set[str] = set()

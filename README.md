@@ -15,6 +15,7 @@
 
 *She sees everything you left exposed.*
 
+[![CI](https://img.shields.io/github/actions/workflow/status/eyadgamer1/banshee/ci.yml?branch=main&style=flat-square&label=tests)](https://github.com/eyadgamer1/banshee/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.12%2B-red?style=flat-square&logo=python)](https://python.org)
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-red?style=flat-square)](LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/linter-ruff-red?style=flat-square)](https://github.com/astral-sh/ruff)
@@ -155,6 +156,7 @@ banshee [TARGETS]... [OPTIONS]
 | `TARGETS` | IP, CIDR, range, or hostname — e.g. `192.168.1.0/24 10.0.0.5-20 host.lan` |
 | `--iface`, `-i` | Network interface for live capture |
 | `--pcap FILE` | Read from a `.pcap` instead of live traffic |
+| `--ports`, `-p` | Ports to probe — `22,80,443` or `1-1024` (default: common set) |
 
 ### Intensity
 
@@ -189,6 +191,8 @@ banshee [TARGETS]... [OPTIONS]
 | `--csv FILE` | CSV report |
 | `--sarif FILE` | SARIF 2.1.0 report |
 | `--all`, `-A BASE` | All formats — `BASE.txt`, `BASE.json`, etc. |
+| `--db FILE` | Persist the run to SQLite and compare MACs against the baseline |
+| `--baseline` | Seed the MAC baseline from this run without raising rogue findings |
 
 ### Toggles
 
@@ -196,7 +200,7 @@ banshee [TARGETS]... [OPTIONS]
 |---|---|
 | `--fingerprint` / `--no-fingerprint` | Identity probes (default: on) |
 | `--names` / `--no-names` | Name resolution (default: on) |
-| `--classify` | Device classification |
+| `--classify` / `--no-classify` | Device classification — local, zero packets (default: on) |
 | `--plugins` | Run YAML rules from `config/plugins/` |
 | `--ssvc` | SSVC priority scoring (local) |
 | `--enrich` | **[DATA LEAVES HOST]** CVE enrichment via FIRST.org + CISA |
@@ -221,14 +225,18 @@ banshee [TARGETS]... [OPTIONS]
 
 ## Timing Templates
 
-| `-T` | Name | Delay | Timeout | Retries | When to use |
-|---|---|---|---|---|---|
-| `-T0` | Paranoid | 300 s | 8 000 ms | 3 | IDS evasion |
-| `-T1` | Sneaky | 15 s | 6 000 ms | 2 | Quiet sweep |
-| `-T2` | Polite | 400 ms | 5 000 ms | 2 | Low-noise |
-| `-T3` | Normal | 100 ms | 3 000 ms | 1 | Default |
-| `-T4` | Aggressive | 10 ms | 1 500 ms | 1 | Lab / fast |
-| `-T5` | Insane | 0 ms | 750 ms | 0 | CTF / trusted net |
+Values are taken from `scanner/core/budget.py`; `--mode` scales concurrency on top of these.
+
+| `-T` | Name | Concurrency | Delay | Timeout | Retries | When to use |
+|---|---|---|---|---|---|---|
+| `-T0` | Paranoid | 1 | 5 000 ms | 8 000 ms | 3 | IDS evasion |
+| `-T1` | Sneaky | 2 | 1 500 ms | 6 000 ms | 2 | Quiet sweep |
+| `-T2` | Polite | 8 | 400 ms | 5 000 ms | 2 | Low-noise |
+| `-T3` | Normal | 50 | 0 ms | 3 000 ms | 1 | Default |
+| `-T4` | Aggressive | 200 | 0 ms | 1 500 ms | 1 | Lab / fast |
+| `-T5` | Insane | 500 | 0 ms | 750 ms | 0 | CTF / trusted net |
+
+Use `--rate` to impose a packets-per-second cap independently of `-T`.
 
 ---
 
@@ -237,24 +245,48 @@ banshee [TARGETS]... [OPTIONS]
 Edit `config/scope.yaml` before scanning:
 
 ```yaml
-allow:
+banner: "AUTHORIZED TARGETS ONLY — loopback + RFC1918 default scope"
+
+allowlist:
+  - 127.0.0.1/8
   - 10.0.0.0/8
   - 172.16.0.0/12
   - 192.168.0.0/16
-  - 127.0.0.0/8
 
-deny: []
+denylist: []
 
-max_hosts_per_scan: 65535
+max_hosts_per_scan: 1024
+max_ports_per_host: 1000
 ```
 
-Any target outside `allow` raises `ScopeViolationError` (exit code 3).
+Any target outside `allowlist` raises `ScopeViolationError` (exit code 3).
+
+`max_hosts_per_scan` is also a hard expansion guard: a single target that would
+expand past it — `10.0.0.0/8`, say — is **refused** rather than silently truncated
+to an arbitrary slice (exit code 2). Aggregating many smaller targets past the cap
+still truncates.
 
 ---
 
 ## Plugin Rules
 
-Drop `.yaml` files in `config/plugins/` and pass `--plugins`. See `config/plugins/example.yaml` for the format.
+Drop `.yaml` files in `config/plugins/` and pass `--plugins`. A file may hold one
+flat rule (top-level `id`) or many under a `rules:` list. See
+`config/plugins/example.yaml` for the full schema.
+
+```yaml
+rules:
+  - id: PLUGIN-001
+    title: Telnet detected
+    severity: high
+    confidence: confirmed
+    description: Cleartext Telnet is active.
+    match:
+      open_ports: [23, 2323]
+```
+
+Match keys: `open_ports` (list of ints, ANY match), plus optional `device_type`,
+`hostname_regex` and `os_regex` regexes. All keys present in a `match` block must hold.
 
 ```bash
 banshee 192.168.1.0/24 --mode normal --plugins --sarif output/findings.sarif

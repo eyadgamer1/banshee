@@ -150,14 +150,22 @@ class ScanConfig(BaseModel):
     threads: int | None = None
     max_detect_risk: int | None = None  # 0 = passive only
 
-    # feature toggles
+    # port selection — None inherits the discoverer's default probe set
+    ports: list[int] | None = None
+
+    # Feature toggles. Every one of these is written by the CLI and serialised
+    # into the report, so a consumer can tell "clean" from "that pass never ran".
     fingerprint: bool = True
-    classify: bool = False
+    classify: bool = True
     names: bool = True
     enrich: bool = False
-    vuln: bool = False
-    graph: bool = False
+    ssvc: bool = False
+    plugins: bool = False
     agentic: bool = False
+
+    # persistence
+    db: str | None = None
+    baseline: bool = False
 
     # safety
     scope_file: str = "config/scope.yaml"

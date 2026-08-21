@@ -13,13 +13,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from scanner.report.dashboard import live_status, render_result
+from scanner.report.dashboard import render_result
+from scanner.report.live import live_dashboard
 from scanner.report.writers import all_writers
 
 if TYPE_CHECKING:
     from scanner.core.interfaces import ReportWriter
 
-__all__ = ["get_writers", "live_status", "render_result"]
+__all__ = ["get_writers", "live_dashboard", "render_result"]
 
 
 def get_writers() -> dict[str, ReportWriter]:

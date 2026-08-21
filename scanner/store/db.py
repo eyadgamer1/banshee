@@ -225,12 +225,16 @@ class ScanStore:
         return run_id
 
     async def get_known_macs(self) -> set[str]:
-        """Return all MACs ever seen (from mac_baseline)."""
+        """Return all MACs ever seen (from mac_baseline), lower-cased.
+
+        RogueDetector compares lower-cased MACs; normalising here keeps a MAC
+        stored as AA:BB:.. from reading as unknown on the next run.
+        """
         if not self._conn:
             raise RuntimeError("ScanStore not opened")
         async with self._conn.execute("SELECT mac FROM mac_baseline") as cur:
             rows = await cur.fetchall()
-        return {row["mac"] for row in rows}
+        return {row["mac"].lower() for row in rows if row["mac"]}
 
     async def get_runs(self, limit: int = 20) -> list[dict[str, object]]:
         """Return recent scan runs as plain dicts."""

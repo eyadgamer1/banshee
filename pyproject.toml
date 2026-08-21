@@ -1,6 +1,6 @@
 [project]
 name = "banshee-scanner"
-version = "1.0.0"
+version = "1.0.1"
 description = "BANSHEE — passive-first network scanner. No exploitation."
 readme = "README.md"
 license = { file = "LICENSE" }

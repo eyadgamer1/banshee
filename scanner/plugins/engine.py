@@ -45,15 +45,32 @@ def _load_yaml(path: Path) -> Any:
         return None
 
 
+def _rules_in(doc: Any) -> list[dict[str, Any]]:
+    """Extract rule dicts from one loaded YAML document.
+
+    Two file shapes are accepted: a single flat rule (top-level `id`), or a
+    `rules:` list holding many. The list form is the natural way to author a
+    themed rule pack, so it is the shape the shipped examples use.
+    """
+    if not isinstance(doc, dict):
+        return []
+    if "id" in doc:
+        return [doc]
+    listed = doc.get("rules")
+    if isinstance(listed, list):
+        return [r for r in listed if isinstance(r, dict) and "id" in r]
+    return []
+
+
 def load_rules(plugin_dir: Path) -> list[dict[str, Any]]:
     """Load all *.yaml / *.yml rule files from plugin_dir."""
     if not plugin_dir.exists():
         return []
     rules = []
     for path in sorted(plugin_dir.glob("*.y*ml")):
-        rule = _load_yaml(path)
-        if rule and isinstance(rule, dict) and "id" in rule:
-            rules.append(rule)
+        found = _rules_in(_load_yaml(path))
+        rules.extend(found)
+        for rule in found:
             log.debug("Loaded plugin rule %s from %s", rule["id"], path.name)
     return rules
 

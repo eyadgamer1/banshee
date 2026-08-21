@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Annotated
 
@@ -21,14 +22,130 @@ from rich.console import Console
 
 from scanner import __version__, discovery, fingerprint, report, risk
 from scanner.core.budget import StealthBudget
-from scanner.core.engine import ScanEngine
-from scanner.core.models import ScanConfig, ScanMode
+from scanner.core.engine import ScanEngine, TargetTooLargeError
+from scanner.core.models import ScanConfig, ScanMode, ScanResult
 from scanner.core.scope import AuditLog, ScopeGuard, ScopeViolationError
 from scanner.correlate import build_attack_graph, build_segment_map
 from scanner.intel import enrich_result, prioritize_result
 from scanner.llm import generate_report, run_react_loop
 from scanner.plugins import run_plugins
+from scanner.store import RogueDetector, ScanStore
 from scanner.ui import print_banner
+
+
+def parse_ports(spec: str) -> list[int]:
+    """Parse an nmap-style port spec: "22,80,443" or "1-1024" or a mix of both.
+
+    Raises ValueError on anything unparseable so the CLI can refuse the run
+    rather than silently scanning a different port set than the operator asked for.
+    """
+    ports: list[int] = []
+    for chunk in spec.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "-" in chunk:
+            lo_s, _, hi_s = chunk.partition("-")
+            lo, hi = int(lo_s), int(hi_s)
+            if lo > hi:
+                raise ValueError(f"reversed port range: {chunk}")
+            ports.extend(range(lo, hi + 1))
+        else:
+            ports.append(int(chunk))
+    if not ports:
+        raise ValueError("no ports given")
+    for p in ports:
+        if not 1 <= p <= 65535:
+            raise ValueError(f"port out of range: {p}")
+    return sorted(set(ports))
+
+async def _run_pipeline(
+    cfg: ScanConfig,
+    guard: ScopeGuard,
+    budget: StealthBudget,
+    console: Console,
+    live_enabled: bool,
+) -> ScanResult:
+    """Run the scan and every post-scan analysis pass in one event loop.
+
+    Ordering is load-bearing: `risk.tier_result` is the final authority on
+    confidence and is what caps LLM-inferred findings at POTENTIAL, so it must
+    run *after* every pass that can add or mutate a finding — plugins, intel,
+    rogue detection and the agentic stage all do.
+    """
+    silent = cfg.silent
+    with report.live_dashboard(console, cfg, enabled=live_enabled) as progress_hook:
+        engine = ScanEngine(
+            scope=guard,
+            budget=budget,
+            discoverers=discovery.get_discoverers(cfg),
+            fingerprinters=fingerprint.get_fingerprinters(cfg) if cfg.fingerprint else [],
+            progress=progress_hook,
+        )
+        result = await engine.run(cfg)
+
+    # C1 — attack-path graph (always runs; attaches pivot findings)
+    attack_graph = build_attack_graph(result)
+    if not silent and attack_graph.edges:
+        n_pivots = len(attack_graph.pivot_targets())
+        console.print(
+            f"[dim]C1 attack graph: {len(attack_graph.edges)} edges, {n_pivots} pivots[/dim]"
+        )
+
+    # C2 — segment map: group hosts by subnet, flag bridge hosts
+    seg_map = build_segment_map(result)
+    if not silent and seg_map.segments:
+        console.print(
+            f"[dim]C2 segment map: {len(seg_map.segments)} segments, "
+            f"{len(seg_map.bridges)} bridge hosts[/dim]"
+        )
+
+    # E1 — YAML plugin rules
+    if cfg.plugins:
+        n_plugin = run_plugins(result)
+        if not silent:
+            console.print(f"[dim]E1 plugins: {n_plugin} findings added[/dim]")
+
+    # C4 — external intel enrichment (data leaves host)
+    if cfg.enrich:
+        await enrich_result(result)
+
+    # C5 — SSVC prioritization (local, always safe)
+    if cfg.ssvc:
+        priorities = prioritize_result(result)
+        if not silent:
+            console.print(f"[dim]C5 SSVC: {len(priorities)} findings tagged[/dim]")
+
+    # D1/D4 — agentic ReAct analysis + LLM report
+    if cfg.agentic:
+        if not silent:
+            console.print("[dim]D1 ReAct: running agentic analysis via Ollama...[/dim]")
+        analysis = await run_react_loop(result)
+        llm_summary = await generate_report(result)
+        if not silent:
+            console.print(analysis)
+            console.print("\n[bold]AI Executive Summary[/bold]\n" + llm_summary)
+
+    # A6/E2 — persistence and rogue detection. The baseline must be read before
+    # this run is written, or every MAC in the run would match itself.
+    async with AsyncExitStack() as stack:
+        store = await stack.enter_async_context(ScanStore(cfg.db)) if cfg.db else None
+        if store is not None and not cfg.baseline:
+            known_macs = await store.get_known_macs()
+            rogues = RogueDetector().check(result, known_macs)
+            if not silent and rogues:
+                console.print(f"[bold red]E2 rogue: {len(rogues)} unknown MAC(s)[/bold red]")
+
+        risk.tier_result(result)
+        result.stats.findings = sum(len(h.findings) for h in result.hosts)
+
+        if store is not None:
+            run_id = await store.save_result(result)
+            if not silent:
+                console.print(f"[green]A6 stored[/green] run #{run_id} -> {cfg.db}")
+
+    return result
+
 
 app = typer.Typer(
     add_completion=False,
@@ -73,6 +190,15 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     pcap: Annotated[
         str | None,
         typer.Option("--pcap", help="read from pcap instead of live", rich_help_panel=_TARGETS),
+    ] = None,
+    ports: Annotated[
+        str | None,
+        typer.Option(
+            "--ports",
+            "-p",
+            help="ports to probe, e.g. 22,80,443 or 1-1024 (default: common set)",
+            rich_help_panel=_TARGETS,
+        ),
     ] = None,
     # --- verbosity dial ---
     verbose: Annotated[
@@ -156,8 +282,13 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         bool, typer.Option("--names/--no-names", help="name resolution", rich_help_panel=_TOGGLES)
     ] = True,
     do_classify: Annotated[
-        bool, typer.Option("--classify", help="device classification", rich_help_panel=_TOGGLES)
-    ] = False,
+        bool,
+        typer.Option(
+            "--classify/--no-classify",
+            help="device classification (local, zero packets)",
+            rich_help_panel=_TOGGLES,
+        ),
+    ] = True,
     do_enrich: Annotated[
         bool,
         typer.Option("--enrich", help="external intel enrichment (data leaves host)",
@@ -177,6 +308,23 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         bool,
         typer.Option("--plugins", help="apply YAML plugin rules from config/plugins/",
                      rich_help_panel=_TOGGLES),
+    ] = False,
+    # --- persistence ---
+    db: Annotated[
+        str | None,
+        typer.Option(
+            "--db",
+            help="SQLite path — persist this run and compare MACs to the baseline",
+            rich_help_panel=_OUTPUT,
+        ),
+    ] = None,
+    baseline: Annotated[
+        bool,
+        typer.Option(
+            "--baseline",
+            help="seed the MAC baseline from this run without raising rogue findings",
+            rich_help_panel=_OUTPUT,
+        ),
     ] = False,
     # --- safety ---
     scope_file: Annotated[
@@ -229,10 +377,19 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         out_csv = out_csv or f"{out_all}.csv"
         out_sarif = out_sarif or f"{out_all}.sarif"
 
+    parsed_ports: list[int] | None = None
+    if ports:
+        try:
+            parsed_ports = parse_ports(ports)
+        except ValueError as exc:
+            console.print(f"[red]error:[/red] bad --ports value {ports!r}: {exc}")
+            raise typer.Exit(code=2) from None
+
     cfg = ScanConfig(
         targets=targets,
         iface=iface,
         pcap=pcap,
+        ports=parsed_ports,
         mode=mode,
         timing=timing,
         rate=rate,
@@ -244,6 +401,11 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         names=do_names,
         classify=do_classify,
         enrich=do_enrich,
+        ssvc=do_ssvc,
+        plugins=do_plugins,
+        agentic=do_agentic,
+        db=db,
+        baseline=baseline,
         scope_file=scope_file,
         dry_run=dry_run,
         audit_log=audit_log,
@@ -269,71 +431,22 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         console.print(f"[bold yellow][!] {guard.banner}[/bold yellow]")
         console.print(f"[dim]mode={mode.value} -T{timing} fingerprint={do_fingerprint}[/dim]")
 
-    budget = StealthBudget.from_config(cfg)
-    live_enabled = not silent and not quiet and not dry_run and console.is_terminal
-    from scanner.report.live import live_dashboard
-    with live_dashboard(console, cfg, enabled=live_enabled) as progress_hook:
-        engine = ScanEngine(
-            scope=guard,
-            budget=budget,
-            discoverers=discovery.get_discoverers(cfg),
-            fingerprinters=fingerprint.get_fingerprinters(cfg) if do_fingerprint else [],
-            progress=progress_hook,
-        )
-        try:
-            result = asyncio.run(engine.run(cfg))
-        except ScopeViolationError as exc:
-            console.print(f"[red]scope violation:[/red] {exc}")
-            raise typer.Exit(code=3) from exc
-
-    risk.tier_result(result)
-
-    # P3 — attack-path graph (always runs; attaches pivot findings)
-    attack_graph = build_attack_graph(result)
-    if not silent and attack_graph.edges:  # noqa: SIM102
-        n_pivots = len(attack_graph.pivot_targets())
-        console.print(
-            f"[dim]C1 attack graph: {len(attack_graph.edges)} edges, {n_pivots} pivots[/dim]"
-        )
-
-    # P4 — segment map (C2): group hosts by subnet, flag bridge hosts
-    seg_map = build_segment_map(result)
-    if not silent and seg_map.segments:
-        bridges = len(seg_map.bridges)
-        console.print(
-            f"[dim]C2 segment map: {len(seg_map.segments)} segments, {bridges} bridge hosts[/dim]"
-        )
-
-    # P3 — YAML plugin rules
-    if do_plugins:
-        n_plugin = run_plugins(result)
-        if not silent:
-            console.print(f"[dim]E1 plugins: {n_plugin} findings added[/dim]")
-
-    # P3 — external intel enrichment (data leaves host)
-    if do_enrich:
+    if do_enrich and not silent:
         console.print(
             "[bold yellow][!] --enrich: CVE IDs will be sent to FIRST.org and CISA. "
             "Data leaves host.[/bold yellow]"
         )
-        asyncio.run(enrich_result(result))
 
-    # P3 — SSVC prioritization (local, always safe)
-    if do_ssvc:
-        priorities = prioritize_result(result)
-        if not silent:
-            console.print(f"[dim]C5 SSVC: {len(priorities)} findings tagged[/dim]")
-
-    # P3 — agentic ReAct analysis + LLM report
-    if do_agentic:
-        if not silent:
-            console.print("[dim]D1 ReAct: running agentic analysis via Ollama...[/dim]")
-        analysis = asyncio.run(run_react_loop(result))
-        if not silent:
-            console.print(analysis)
-        llm_summary = asyncio.run(generate_report(result))
-        if not silent:
-            console.print("\n[bold]AI Executive Summary[/bold]\n" + llm_summary)
+    budget = StealthBudget.from_config(cfg)
+    live_enabled = not silent and not quiet and not dry_run and console.is_terminal
+    try:
+        result = asyncio.run(_run_pipeline(cfg, guard, budget, console, live_enabled))
+    except ScopeViolationError as exc:
+        console.print(f"[red]scope violation:[/red] {exc}")
+        raise typer.Exit(code=3) from exc
+    except TargetTooLargeError as exc:
+        console.print(f"[red]target too large:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
 
     if not silent:
         report.render_result(console, result, quiet=quiet)
