@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS mac_baseline (
 class ScanStore:
     """Async context manager wrapping an aiosqlite connection."""
 
-    def __init__(self, db_path: str | Path = "pps.db") -> None:
+    def __init__(self, db_path: str | Path = "banshee.db") -> None:
         self._path = Path(db_path)
         self._conn: aiosqlite.Connection | None = None
 

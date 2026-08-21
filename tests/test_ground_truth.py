@@ -78,6 +78,7 @@ def scan_localhost(scope_file, tmp_path, ports: list[int]) -> dict:
             "127.0.0.1",
             "--mode", "normal",
             "-T", "4",
+            "--sniff-timeout", "0.5",
             "--no-fingerprint",
             "--ports", ",".join(str(p) for p in ports),
             "--scope", scope_file,
@@ -143,7 +144,7 @@ def test_passive_mode_sends_zero_packets_and_claims_no_ports(loopback_scope, tmp
         result = runner.invoke(
             app,
             [
-                "127.0.0.1", "--mode", "passive", "--no-fingerprint",
+                "127.0.0.1", "--mode", "passive", "--no-fingerprint", "--sniff-timeout", "0.5",
                 "--ports", str(bound[0]),
                 "--scope", loopback_scope, "--silent", "--json", str(out),
             ],
@@ -196,6 +197,7 @@ async def test_llm_findings_are_capped_after_every_analysis_pass(monkeypatch, lo
     cfg = ScanConfig(
         targets=["127.0.0.1"], mode=ScanMode.NORMAL, ports=[closed_port()],
         fingerprint=False, plugins=True, silent=True, scope_file=loopback_scope,
+        sniff_timeout=0.5,
     )
     guard = ScopeGuard.from_file(loopback_scope, audit=AuditLog(None))
     result = await _run_pipeline(

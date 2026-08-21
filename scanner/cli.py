@@ -200,6 +200,15 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             rich_help_panel=_TARGETS,
         ),
     ] = None,
+    sniff_timeout: Annotated[
+        float,
+        typer.Option(
+            "--sniff-timeout",
+            min=0.0,
+            help="seconds the passive sniffer listens before reporting",
+            rich_help_panel=_TARGETS,
+        ),
+    ] = 10.0,
     # --- verbosity dial ---
     verbose: Annotated[
         int, typer.Option("--verbose", "-v", count=True, help="-v/-vv/-vvv", rich_help_panel=_VERB)
@@ -390,6 +399,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         iface=iface,
         pcap=pcap,
         ports=parsed_ports,
+        sniff_timeout=sniff_timeout,
         mode=mode,
         timing=timing,
         rate=rate,

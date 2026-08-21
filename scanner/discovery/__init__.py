@@ -39,7 +39,9 @@ def get_discoverers(cfg: ScanConfig) -> list[Discoverer]:
 
     if getattr(cfg, "pcap", None):
         return [PcapDiscoverer(cfg.pcap)]  # type: ignore[arg-type]
-    discoverers: list[Discoverer] = [PassiveSniffer(iface=cfg.iface)]
+    discoverers: list[Discoverer] = [
+        PassiveSniffer(iface=cfg.iface, timeout=cfg.sniff_timeout)
+    ]
     if cfg.mode != ScanMode.PASSIVE:
         discoverers.append(IcmpPingDiscoverer())
         sweep = TcpSweepDiscoverer(cfg.ports) if cfg.ports else TcpSweepDiscoverer()

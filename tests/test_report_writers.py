@@ -113,7 +113,10 @@ def test_sarif_schema_basics(writers, tmp_path):
     doc = json.loads(p.read_text(encoding="utf-8"))
     assert doc["version"] == "2.1.0"
     run = doc["runs"][0]
-    assert run["tool"]["driver"]["name"] == "pps"
+    # The tool name and URI end up in whatever ingests the SARIF (GitHub code
+    # scanning, DefectDojo). They must match the real project, not the old name.
+    assert run["tool"]["driver"]["name"] == "banshee"
+    assert run["tool"]["driver"]["informationUri"].endswith("/banshee")
     assert run["results"][0]["ruleId"] == "F1"
     assert run["results"][0]["level"] == "error"  # HIGH -> error
 

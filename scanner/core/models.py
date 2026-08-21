@@ -153,6 +153,9 @@ class ScanConfig(BaseModel):
     # port selection — None inherits the discoverer's default probe set
     ports: list[int] | None = None
 
+    # seconds the passive sniffer listens before returning what it saw
+    sniff_timeout: float = 10.0
+
     # Feature toggles. Every one of these is written by the CLI and serialised
     # into the report, so a consumer can tell "clean" from "that pass never ran".
     fingerprint: bool = True

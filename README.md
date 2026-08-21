@@ -157,6 +157,7 @@ banshee [TARGETS]... [OPTIONS]
 | `--iface`, `-i` | Network interface for live capture |
 | `--pcap FILE` | Read from a `.pcap` instead of live traffic |
 | `--ports`, `-p` | Ports to probe — `22,80,443` or `1-1024` (default: common set) |
+| `--sniff-timeout N` | Seconds the passive sniffer listens before reporting (default: 10) |
 
 ### Intensity
 

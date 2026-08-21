@@ -36,11 +36,18 @@ that gap and adds end-to-end tests that drive the real CLI rather than the modul
 - Four `asyncio.run()` calls per invocation collapsed into one event loop.
 - README timing table listed delays that did not match `budget.py`; scope example used
   `allow:`/`deny:` instead of the real `allowlist:`/`denylist:`.
+- SARIF output identified the tool as `pps` and pointed `informationUri` at a repository
+  that does not exist. Any consumer ingesting BANSHEE findings — GitHub code scanning
+  included — recorded the wrong tool. Default store path was likewise `pps.db`.
 
 ### Added
 
 - `--ports` / `-p` — nmap-style port selection (`22,80,443` or `1-1024`). Previously
   there was no way to choose ports at all.
+- `--sniff-timeout` — how long the passive sniffer listens, previously fixed at 10s
+  with no way to change it, which is an odd gap for a passive-first tool. Also cuts
+  the test suite from 55s to under 10s, since that time was almost entirely capture
+  wait rather than work.
 - Ground-truth test suite: binds real listeners on loopback, runs the real CLI, and
   asserts the reported ports equal the bound ports exactly — including the negative
   direction, that an unbound port is never reported open.

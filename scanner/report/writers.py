@@ -88,7 +88,7 @@ class TxtWriter:
     def write(self, result: ScanResult, path: Path) -> None:
         lines: list[str] = [
             result.banner,
-            "pps scan report",
+            "BANSHEE scan report",
             f"mode: {result.config.mode.value}   started: "
             f"{result.started_at.isoformat(timespec='seconds')}",
             "",
@@ -285,8 +285,8 @@ class SarifWriter:
                 {
                     "tool": {
                         "driver": {
-                            "name": "pps",
-                            "informationUri": "https://github.com/eyadgamer1/pps",
+                            "name": "banshee",
+                            "informationUri": "https://github.com/eyadgamer1/banshee",
                             "rules": rules,
                         }
                     },
