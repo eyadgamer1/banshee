@@ -36,9 +36,15 @@ async def test_tcp_sweep_detects_open_port(monkeypatch):
         async def wait_closed(self):
             return None
 
+    class FakeReader:
+        """Silent server: accepts the connection, offers no greeting."""
+
+        async def read(self, _n):
+            return b""
+
     async def fake_open(ip, port):
         if port == 80:
-            return (object(), FakeWriter())
+            return (FakeReader(), FakeWriter())
         raise ConnectionRefusedError
 
     monkeypatch.setattr(asyncio, "open_connection", fake_open)

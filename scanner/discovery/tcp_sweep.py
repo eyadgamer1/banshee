@@ -52,6 +52,11 @@ _OPEN = "open"
 _REFUSED = "refused"
 _DEAD = "dead"
 
+# Banner read budget. Short on purpose: a server that speaks first does so
+# immediately, and one that does not should cost us almost nothing to find out.
+_BANNER_BYTES = 256
+_BANNER_TIMEOUT_S = 2.0
+
 
 class TcpSweepDiscoverer:
     """A3 — TCP-connect ping sweep. Unprivileged, cross-platform."""
@@ -80,13 +85,15 @@ class TcpSweepDiscoverer:
         return hosts
 
     async def _scan_host(self, ip: str, ctx: ScanContext, sem: asyncio.Semaphore) -> Host | None:
-        async def probe(port: int) -> tuple[int, str]:
+        async def probe(port: int) -> tuple[int, str, str | None]:
             async with sem:
-                return port, await self._probe_port(ip, port, ctx)
+                outcome, banner = await self._probe_port(ip, port, ctx)
+                return port, outcome, banner
 
         results = await asyncio.gather(*(probe(p) for p in self.ports))
-        open_ports = [port for port, outcome in results if outcome == _OPEN]
-        alive = any(outcome in (_OPEN, _REFUSED) for _, outcome in results)
+        banners = {port: banner for port, outcome, banner in results if outcome == _OPEN}
+        open_ports = [port for port, outcome, _ in results if outcome == _OPEN]
+        alive = any(outcome in (_OPEN, _REFUSED) for _, outcome, _ in results)
         if not alive:
             return None
 
@@ -98,25 +105,44 @@ class TcpSweepDiscoverer:
                     proto=Proto.TCP,
                     state=PortState.OPEN,
                     name=_WELL_KNOWN.get(port),
+                    banner=banners.get(port),
                     confidence=ConfidenceTier.CONFIRMED,
                     source=self.feature_id,
                 )
             )
         return host
 
-    async def _probe_port(self, ip: str, port: int, ctx: ScanContext) -> str:
+    async def _probe_port(self, ip: str, port: int, ctx: ScanContext) -> tuple[str, str | None]:
         if not ctx.budget.can_send():
-            return _DEAD
+            return _DEAD, None
         await ctx.budget.throttle()
         try:
             fut = asyncio.open_connection(ip, port)
-            _, writer = await asyncio.wait_for(fut, timeout=ctx.budget.timeout_s)
+            reader, writer = await asyncio.wait_for(fut, timeout=ctx.budget.timeout_s)
         except ConnectionRefusedError:
-            return _REFUSED  # host answered; port closed -> still proves liveness
+            return _REFUSED, None  # host answered; port closed -> still proves liveness
         except (TimeoutError, OSError):
-            return _DEAD
+            return _DEAD, None
+        banner = await self._read_banner(reader)
         await self._close(writer)
-        return _OPEN
+        return _OPEN, banner
+
+    @staticmethod
+    async def _read_banner(reader: asyncio.StreamReader) -> str | None:
+        """Read a server-speaks-first greeting, if the service offers one.
+
+        Sends nothing — this only reads from a connection that is already open, so
+        it costs no extra packet and does not change the scan's detection profile.
+        Protocols that wait for the client (HTTP) simply time out and yield None,
+        which is the honest answer: we did not ask, so we did not learn.
+        """
+        try:
+            raw = await asyncio.wait_for(reader.read(_BANNER_BYTES), timeout=_BANNER_TIMEOUT_S)
+        except (TimeoutError, OSError, asyncio.IncompleteReadError):
+            return None
+        if not raw:
+            return None
+        return raw.decode("utf-8", errors="replace").strip() or None
 
     @staticmethod
     async def _close(writer: asyncio.StreamWriter) -> None:

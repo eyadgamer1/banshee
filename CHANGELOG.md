@@ -28,6 +28,17 @@ that gap and adds end-to-end tests that drive the real CLI rather than the modul
   overrides the configured model.
 - **Rogue detection missed MACs stored in a different case.** Baseline lookups are
   normalised to lower case.
+- **Two guaranteed false positives, found by scanning a real host.** Nothing in the
+  pipeline ever populated `Service.banner`, so the negative-space check "SSH open with
+  no banner - possible honeypot" fired on *every* SSH host alive. The TCP sweep now
+  reads a server-speaks-first greeting on the connection it already opened (no extra
+  packet, no change to the detection profile), and the check is gated to services the
+  sweep actually connected to - a passively-observed service has no banner for the
+  trivial reason that nobody opened a socket to it.
+- **Clock skew reported single-homed hosts as anycast over long-haul paths.** RTT
+  jitter alone pushed the two interval estimates past the disagreement threshold. When
+  the measured wall-clock intervals themselves disagree that much, the input is
+  unreliable and the result is now "unknown" rather than "anycast".
 - **Crashed on a default Windows console.** The block-drawing startup banner raised
   `UnicodeEncodeError` on cp1252 before the scan began, so every invocation failed
   unless `PYTHONIOENCODING=utf-8` was set. An ASCII banner is used when the console

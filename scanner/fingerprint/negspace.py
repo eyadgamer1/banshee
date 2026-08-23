@@ -56,9 +56,18 @@ class NegativeSpaceFingerprinter:
 
 
 def _check_banner_absence(host: Host) -> None:
-    """SSH open but no banner → possible honeypot or access control."""
+    """SSH open but silent on connect - possible honeypot or access control.
+
+    Only meaningful for services the TCP sweep (A3) actually connected to, since
+    that is the one code path that attempts a banner read. Without this guard the
+    check fired on every SSH host alive, because a service discovered passively or
+    listed from a pcap has `banner is None` for the trivial reason that nobody ever
+    opened a socket to it.
+    """
     from scanner.core.models import ConfidenceTier, Finding, Severity
     for svc in host.services:
+        if svc.port == 22 and svc.source != "A3":
+            continue
         if svc.port == 22 and svc.banner is None and svc.state.value == "open":
             host.findings.append(Finding(
                 id=f"B8-nobanner-{host.ip.replace('.', '_')}",

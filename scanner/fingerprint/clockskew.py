@@ -33,6 +33,10 @@ _ANYCAST_PPM_THRESHOLD = 2000.0
 # Two consecutive interval Hz estimates disagreeing by more than this fraction means
 # different nodes answered the probes — anycast.
 _ANYCAST_HZ_DISAGREE = 0.4
+# If our own two wall-clock probe intervals differ by more than this fraction, the
+# path jitter is large enough to explain the Hz disagreement on its own, so no
+# anycast conclusion can be drawn from it.
+_WALL_JITTER_LIMIT = 0.25
 
 
 class ClockSkewFingerprinter:
@@ -172,6 +176,20 @@ def _probe_sync(ip: str, port: int) -> float | None:
             # physical nodes responded — mark anycast regardless of magnitude.
             hz_max = max(hz12, hz23)
             if hz_max > 0 and abs(hz12 - hz23) / hz_max > _ANYCAST_HZ_DISAGREE:
+                # ...unless our own measurement is too noisy to tell. Over a
+                # long-haul WAN path, RTT jitter alone skews the two interval
+                # estimates past the threshold, which made single-homed hosts
+                # abroad report as anycast. When the wall-clock intervals we
+                # measured disagree that much themselves, the input is unreliable
+                # and the honest answer is "unknown", not "anycast".
+                wall_max = max(wall12, wall23)
+                jittery = wall_max > 0 and abs(wall12 - wall23) / wall_max > _WALL_JITTER_LIMIT
+                if jittery:
+                    log.debug(
+                        "B7 %s: skew inconclusive, wall intervals %.3fs vs %.3fs",
+                        ip, wall12, wall23,
+                    )
+                    return None
                 return -1.0  # sentinel: anycast CDN detected (inconsistent clocks)
             remote_hz = (hz12 + hz23) / 2
         else:

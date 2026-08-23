@@ -21,6 +21,9 @@ def has(host: Host, needle: str) -> bool:
 @pytest.mark.asyncio
 async def test_ssh_no_banner_flagged():
     host = make_host(ip="10.0.0.5", ports=[22])
+    # Only A3-sourced services had a banner read attempted, so only those can
+    # support a "stayed silent" conclusion.
+    host.services[0].source = "A3"
     await NegativeSpaceFingerprinter().fingerprint(host, make_ctx())
     assert has(host, "SSH open with no banner")
 

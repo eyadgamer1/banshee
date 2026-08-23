@@ -231,3 +231,66 @@ def test_parse_ports_accepts_lists_ranges_and_rejects_junk():
     for bad in ("", "80-20", "0", "70000", "http"):
         with pytest.raises(ValueError):
             parse_ports(bad)
+
+
+def test_banner_is_captured_from_a_server_that_speaks_first(loopback_scope, tmp_path):
+    """A real greeting must land in Service.banner, and must not be invented.
+
+    Guards F16: nothing in the pipeline populated Service.banner, which made the
+    negative-space honeypot check ("SSH open with no banner") fire on every SSH
+    host alive. Two listeners here: one greets on connect, one stays silent.
+    """
+    import threading
+
+    greeting = b"SSH-2.0-OpenSSH_9.6 ground-truth\r\n"
+    talker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    talker.bind(("127.0.0.1", 0))
+    talker.listen(4)
+    mute = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    mute.bind(("127.0.0.1", 0))
+    mute.listen(4)
+    t_port, m_port = talker.getsockname()[1], mute.getsockname()[1]
+
+    def greet():
+        with contextlib.suppress(OSError):
+            conn, _ = talker.accept()
+            conn.sendall(greeting)
+            conn.close()
+
+    thread = threading.Thread(target=greet, daemon=True)
+    thread.start()
+    try:
+        data = scan_localhost(loopback_scope, tmp_path, [t_port, m_port])
+    finally:
+        talker.close()
+        mute.close()
+
+    host = next(h for h in data["hosts"] if h["ip"] == "127.0.0.1")
+    by_port = {s["port"]: s for s in host["services"]}
+    assert by_port[t_port]["banner"] is not None
+    assert "OpenSSH_9.6 ground-truth" in by_port[t_port]["banner"]
+    # The silent listener must report no banner rather than a fabricated one.
+    assert by_port[m_port]["banner"] is None
+
+
+def test_no_banner_honeypot_check_ignores_services_never_connected_to():
+    """Guards F16: the check may only fire for ports the TCP sweep actually opened."""
+    from scanner.core.models import Host, HostState, PortState, Proto, Service
+    from scanner.fingerprint.negspace import _check_banner_absence
+
+    def ssh_host(source: str) -> Host:
+        return Host(
+            ip="10.0.0.9",
+            state=HostState.UP,
+            services=[
+                Service(port=22, proto=Proto.TCP, state=PortState.OPEN, source=source)
+            ],
+        )
+
+    passive = ssh_host("A2")  # seen on the wire; no socket was ever opened to it
+    _check_banner_absence(passive)
+    assert passive.findings == []
+
+    probed = ssh_host("A3")  # connected to, and it said nothing
+    _check_banner_absence(probed)
+    assert [f.source for f in probed.findings] == ["B8"]
