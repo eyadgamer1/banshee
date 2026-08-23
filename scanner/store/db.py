@@ -1,7 +1,7 @@
 """A6 — aiosqlite persistence layer.
 
 Schema:
-  scan_runs   — one row per `pps` invocation
+  scan_runs   — one row per `banshee` invocation
   hosts       — one row per discovered host per run
   services    — one row per service per host per run
   findings    — one row per finding per host per run

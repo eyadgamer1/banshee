@@ -44,6 +44,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["scanner"]
 
+# Ship the built-in default scope so an installed `banshee` has a working
+# allowlist without a config/ tree in the working directory.
+[tool.hatch.build.targets.wheel.force-include]
+"scanner/data/default_scope.yaml" = "scanner/data/default_scope.yaml"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

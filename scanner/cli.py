@@ -166,6 +166,36 @@ _TOGGLES = "Toggles"
 _SAFETY = "Safety"
 _MAINT = "Maintenance"
 
+# The default scope path is relative to the working directory. When BANSHEE is
+# installed as a tool (uv tool / pipx / pip) and run from an arbitrary directory,
+# that file will not exist — so we fall back to a copy shipped inside the package.
+_DEFAULT_SCOPE_FILE = "config/scope.yaml"
+
+
+def _resolve_scope_file(scope_file: str, console: Console, *, quiet: bool) -> str:
+    """Return a usable scope path.
+
+    If the given file exists, use it. If it does not and the user did not override
+    ``--scope`` (still the default), fall back to the packaged default scope so an
+    installed ``banshee`` works from any directory. An explicit missing path is
+    left untouched, so it fails loudly with the value the user actually typed.
+    """
+    if Path(scope_file).exists():
+        return scope_file
+    if scope_file != _DEFAULT_SCOPE_FILE:
+        return scope_file
+    from importlib.resources import files
+
+    packaged = files("scanner").joinpath("data", "default_scope.yaml")
+    if not packaged.is_file():
+        return scope_file
+    if not quiet:
+        console.print(
+            "[dim]using built-in default scope (loopback + RFC1918); "
+            "add config/scope.yaml or pass --scope to customize[/dim]"
+        )
+    return str(packaged)
+
 
 def _version_cb(value: bool) -> None:
     if value:
@@ -338,7 +368,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     # --- safety ---
     scope_file: Annotated[
         str, typer.Option("--scope", help="scope allowlist file", rich_help_panel=_SAFETY)
-    ] = "config/scope.yaml",
+    ] = _DEFAULT_SCOPE_FILE,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="plan only; send zero packets", rich_help_panel=_SAFETY),
@@ -432,7 +462,8 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
 
     try:
         audit = AuditLog(cfg.audit_log)
-        guard = ScopeGuard.from_file(cfg.scope_file, audit=audit)
+        resolved_scope = _resolve_scope_file(cfg.scope_file, console, quiet=quiet or silent)
+        guard = ScopeGuard.from_file(resolved_scope, audit=audit)
     except FileNotFoundError:
         console.print(f"[red]error:[/red] scope file not found: {cfg.scope_file}")
         raise typer.Exit(code=2) from None

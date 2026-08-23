@@ -39,7 +39,8 @@ def _header_panel(cfg: ScanConfig) -> Panel:
     timing = cfg.timing
     iface = cfg.iface or "default"
     content = Text(f"mode={mode}  -T{timing}  iface={iface}", justify="center")
-    return Panel(content, title="[bold cyan]pps live scan[/bold cyan]", border_style="cyan")
+    title = "[bold red]BANSHEE[/bold red] [dim]live scan[/dim]"
+    return Panel(content, title=title, border_style="red")
 
 
 def _host_table(hosts: dict[str, dict[str, object]]) -> Table:

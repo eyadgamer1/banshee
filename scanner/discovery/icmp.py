@@ -42,7 +42,7 @@ def icmp_checksum(data: bytes) -> int:
     return ~total & 0xFFFF
 
 
-def _build_echo(ident: int, seq: int, payload: bytes = b"pps-discovery") -> bytes:
+def _build_echo(ident: int, seq: int, payload: bytes = b"banshee-discovery") -> bytes:
     header = _ICMP_HEADER.pack(_ICMP_ECHO_REQUEST, 0, 0, ident, seq)
     checksum = icmp_checksum(header + payload)
     header = _ICMP_HEADER.pack(_ICMP_ECHO_REQUEST, 0, checksum, ident, seq)

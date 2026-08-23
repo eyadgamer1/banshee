@@ -4,7 +4,7 @@ Reads a .pcap / .pcapng file instead of live capture. Extracts host IPs,
 MACs, and basic service hints from captured traffic. Used for post-mortem
 analysis without sending any packets.
 
-Activated via: `pps --pcap /path/to/file.pcap <targets>`
+Activated via: `banshee --pcap /path/to/file.pcap <targets>`
 
 Protocols parsed:
   ARP reply     → IP + MAC (CONFIRMED)
