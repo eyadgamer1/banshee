@@ -41,3 +41,9 @@ TASKS.md
 # OS
 Thumbs.db
 .DS_Store
+
+# Go engine build artifacts (single static binary; built from engine/)
+banshee-engine.exe
+banshee-engine
+engine/banshee-engine
+engine/banshee-engine.exe
