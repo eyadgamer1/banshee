@@ -22,10 +22,12 @@ returning a silent empty result.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import shutil
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -77,12 +79,76 @@ def find_engine() -> str:
     raise RuntimeError(_build_hint())
 
 
-def build_args(cfg: ScanConfig, scope_path: str) -> list[str]:
+def _needs_dns(token: str) -> bool:
+    """True only for a plain hostname — not an IP, CIDR, or IP range.
+
+    IP/CIDR/range tokens are handed to the Go engine untouched (it expands and
+    scope-checks them itself); only bare hostnames need Python-side resolution,
+    because the Go engine does no DNS.
+    """
+    token = token.strip()
+    try:
+        ipaddress.ip_address(token)
+        return False
+    except ValueError:
+        pass
+    if "/" in token:
+        try:
+            ipaddress.ip_network(token, strict=False)
+            return False
+        except ValueError:
+            pass
+    if "-" in token:  # an IP range like 10.0.0.1-20 has an IP on the left
+        left = token.rsplit("-", 1)[0]
+        try:
+            ipaddress.ip_address(left)
+            return False
+        except ValueError:
+            pass
+    return True
+
+
+def _lookup_host(name: str) -> list[str]:
+    """Resolve a hostname to its IP strings. Blocking — call via an executor.
+
+    Isolated as a module function so it runs off the event loop and so tests can
+    substitute it without depending on the platform resolver.
+    """
+    infos = socket.getaddrinfo(name, None)
+    return sorted({str(info[4][0]) for info in infos})
+
+
+async def resolve_targets(targets: list[str]) -> list[str]:
+    """Resolve hostname targets to IPs so the Go engine gets concrete addresses.
+
+    Mirrors the Python engine's behavior (`ScanEngine._resolve`): IP/CIDR/range
+    tokens pass through unchanged, hostnames become their resolved IPs, and a name
+    that fails to resolve is dropped — exactly as the Python path drops it — so the
+    scope contract sees the same target set on either engine.
+    """
+    loop = asyncio.get_running_loop()
+    out: list[str] = []
+    for token in targets:
+        token = token.strip()
+        if not token:
+            continue
+        if not _needs_dns(token):
+            out.append(token)
+            continue
+        try:
+            out.extend(await loop.run_in_executor(None, _lookup_host, token))
+        except (socket.gaierror, OSError):
+            log.debug("go engine: could not resolve %r; dropping", token)
+    return out
+
+
+def build_args(cfg: ScanConfig, scope_path: str, targets: list[str]) -> list[str]:
     """Translate a ScanConfig into banshee-engine CLI arguments.
 
     Only flags the operator actually set are passed: the Go engine inherits its
     budget template for any flag left unvisited, so we must not hand it a zero the
     user never typed (that is what its own `optInt` guards against on its side).
+    `targets` is the already-resolved address set, not the raw cfg.targets.
     """
     args: list[str] = ["-scope", scope_path, "-mode", cfg.mode.value, "-T", str(cfg.timing)]
 
@@ -107,7 +173,7 @@ def build_args(cfg: ScanConfig, scope_path: str) -> list[str]:
         args += ["-max-detect-risk", str(cfg.max_detect_risk)]
 
     # Targets are positional and must come after the flags.
-    args += list(cfg.targets)
+    args += list(targets)
     return args
 
 
@@ -119,7 +185,16 @@ async def run_go_engine(cfg: ScanConfig, guard: ScopeGuard, scope_path: str) -> 
     banner so the Go and Python paths produce identical report headers.
     """
     binary = find_engine()
-    args = build_args(cfg, scope_path)
+
+    # Python is the mind: resolve hostnames here so the Go engine (which does no
+    # DNS) receives concrete IPs and can scope-check them. If nothing resolves,
+    # return an empty result rather than invoking Go with zero targets — the same
+    # outcome the Python engine produces when every name fails to resolve.
+    resolved = await resolve_targets(cfg.targets)
+    if not resolved:
+        return ScanResult(config=cfg, banner=guard.banner)
+
+    args = build_args(cfg, scope_path, resolved)
     log.debug("go engine: %s %s", binary, " ".join(args))
 
     proc = await asyncio.create_subprocess_exec(
