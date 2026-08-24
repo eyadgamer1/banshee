@@ -26,6 +26,7 @@ from scanner.core.engine import ScanEngine, TargetTooLargeError
 from scanner.core.models import ScanConfig, ScanMode, ScanResult
 from scanner.core.scope import AuditLog, ScopeGuard, ScopeViolationError
 from scanner.correlate import build_attack_graph, build_segment_map
+from scanner.engine_go import run_go_engine
 from scanner.intel import enrich_result, prioritize_result
 from scanner.llm import generate_report, run_react_loop
 from scanner.plugins import run_plugins
@@ -65,6 +66,7 @@ async def _run_pipeline(
     budget: StealthBudget,
     console: Console,
     live_enabled: bool,
+    scope_path: str,
 ) -> ScanResult:
     """Run the scan and every post-scan analysis pass in one event loop.
 
@@ -75,14 +77,20 @@ async def _run_pipeline(
     """
     silent = cfg.silent
     with report.live_dashboard(console, cfg, enabled=live_enabled) as progress_hook:
-        engine = ScanEngine(
-            scope=guard,
-            budget=budget,
-            discoverers=discovery.get_discoverers(cfg),
-            fingerprinters=fingerprint.get_fingerprinters(cfg) if cfg.fingerprint else [],
-            progress=progress_hook,
-        )
-        result = await engine.run(cfg)
+        if cfg.engine == "go":
+            # Go is the hands: fast, low-memory active discovery/probing. It loads
+            # and enforces the same scope file itself. Passive/analysis/report
+            # stages below stay Python regardless of engine.
+            result = await run_go_engine(cfg, guard, scope_path)
+        else:
+            engine = ScanEngine(
+                scope=guard,
+                budget=budget,
+                discoverers=discovery.get_discoverers(cfg),
+                fingerprinters=fingerprint.get_fingerprinters(cfg) if cfg.fingerprint else [],
+                progress=progress_hook,
+            )
+            result = await engine.run(cfg)
 
     # C1 — attack-path graph (always runs; attaches pivot findings)
     attack_graph = build_attack_graph(result)
@@ -165,6 +173,9 @@ _OUTPUT = "Output Files"
 _TOGGLES = "Toggles"
 _SAFETY = "Safety"
 _MAINT = "Maintenance"
+_ENGINE = "Engine"
+
+_ENGINE_CHOICES = ("python", "go")
 
 # The default scope path is relative to the working directory. When BANSHEE is
 # installed as a tool (uv tool / pipx / pip) and run from an arbitrary directory,
@@ -287,6 +298,23 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         int | None,
         typer.Option("--max-detect-risk", help="0=passive..9=full", rich_help_panel=_INTENS),
     ] = None,
+    # --- engine ---
+    engine: Annotated[
+        str,
+        typer.Option(
+            "--engine",
+            help="active-scan engine: python (default) or go (fast, low-memory core)",
+            rich_help_panel=_ENGINE,
+        ),
+    ] = "python",
+    adaptive: Annotated[
+        bool,
+        typer.Option(
+            "--adaptive",
+            help="Go engine: pick probes by info-gain/risk, stop early (needs --engine go)",
+            rich_help_panel=_ENGINE,
+        ),
+    ] = False,
     # --- output files ---
     out_txt: Annotated[
         str | None, typer.Option("--txt", help="write text report", rich_help_panel=_OUTPUT)
@@ -408,6 +436,14 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         console.print("[red]error:[/red] no targets given. See [bold]banshee --help[/bold].")
         raise typer.Exit(code=2)
 
+    if engine not in _ENGINE_CHOICES:
+        choices = ", ".join(_ENGINE_CHOICES)
+        console.print(f"[red]error:[/red] unknown --engine {engine!r}; choose from {choices}")
+        raise typer.Exit(code=2)
+    if adaptive and engine != "go":
+        console.print("[red]error:[/red] --adaptive requires --engine go")
+        raise typer.Exit(code=2)
+
     if out_all:
         out_txt = out_txt or f"{out_all}.txt"
         out_json = out_json or f"{out_all}.json"
@@ -437,6 +473,8 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         retries=retries,
         threads=threads,
         max_detect_risk=max_detect_risk,
+        engine=engine,
+        adaptive=adaptive,
         fingerprint=do_fingerprint,
         names=do_names,
         classify=do_classify,
@@ -481,10 +519,15 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     budget = StealthBudget.from_config(cfg)
     live_enabled = not silent and not quiet and not dry_run and console.is_terminal
     try:
-        result = asyncio.run(_run_pipeline(cfg, guard, budget, console, live_enabled))
+        result = asyncio.run(
+            _run_pipeline(cfg, guard, budget, console, live_enabled, resolved_scope)
+        )
     except ScopeViolationError as exc:
         console.print(f"[red]scope violation:[/red] {exc}")
         raise typer.Exit(code=3) from exc
+    except RuntimeError as exc:  # Go engine not built / failed to run
+        console.print(f"[red]engine error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
     except TargetTooLargeError as exc:
         console.print(f"[red]target too large:[/red] {exc}")
         raise typer.Exit(code=2) from exc

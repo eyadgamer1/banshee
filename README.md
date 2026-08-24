@@ -252,6 +252,15 @@ BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; 
 | `--threads INTEGER` | Max concurrency |
 | `--max-detect-risk 0..9` | Hard ceiling on noise. `0` forces passive; `9` is full-intensity |
 
+### Engine — *who does the active probing*
+
+| Flag | Description |
+|---|---|
+| `--engine [python\|go]` | Active-scan core (default **`python`**). `go` delegates discovery/probing to the fast, low-memory static binary; passive capture, analysis and reporting stay Python either way |
+| `--adaptive` | Go only: pick probes by information-gain per unit of detection risk and stop early once a device class is confident (requires `--engine go`) |
+
+> `--engine go` needs the binary built (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`) and found via `$BANSHEE_ENGINE`, your `PATH`, or the repo's `engine/` directory. See [The Go engine](#the-go-engine).
+
 ### Toggles
 
 | Flag | Description |
@@ -330,6 +339,15 @@ banshee 10.0.0.0/24 -m normal --agentic                   # ReAct LLM risk analy
 
 For fast, low-footprint active sweeps — and for hosts where you cannot install Python — BANSHEE ships a standalone Go engine: a single static binary, no runtime, cross-compiles for ARM drop-boxes. It emits the **exact same JSON schema** as the Python tool, so both are interchangeable in a pipeline.
 
+**Go is the hands, Python is the mind.** You do not have to choose between them: run the normal `banshee` command with `--engine go` and the Go binary does the fast, parallel active probing while Python keeps the passive capture, classification, LLM analysis and all six report formats. It's one tool.
+
+```bash
+# Unified: Python drives, Go does the loud active work, one report at the end
+banshee 10.0.0.0/28 -m normal --engine go --adaptive --html report.html
+```
+
+Or drive the binary directly for a dependency-free sweep on a jump box:
+
 ```bash
 cd engine && go build -o banshee-engine ./cmd/banshee-engine
 
@@ -397,7 +415,7 @@ uv run pytest tests/test_ground_truth.py -v
 10 passed
 ```
 
-The full suite (255 tests) plus the Go engine's own ground-truth tests (`cd engine && go test ./...`) run on every push via CI on Linux and Windows.
+The full suite (261 tests — including cross-engine parity that drives **both** the Python and Go engines against real loopback listeners and asserts they agree port-for-port) plus the Go engine's own ground-truth tests (`cd engine && go test ./...`) run on every push via CI on Linux and Windows.
 
 ---
 

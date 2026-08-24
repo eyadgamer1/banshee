@@ -93,7 +93,12 @@ func (e *Engine) Run(ctx context.Context, targets []string) (*model.Result, erro
 			Adaptive: e.opts.Adaptive,
 			DryRun:   !e.budget.AllowActive,
 		},
-		Banner:    e.guard.Banner,
+		Banner: e.guard.Banner,
+		// Init non-nil so an empty scan serializes "hosts":[] not "hosts":null.
+		// pydantic on the Python side rejects null for a list field; the passive
+		// early-return below relies on this literal since it never reaches the
+		// active assignment.
+		Hosts:     []model.Host{},
 		StartedAt: started,
 		Stats: model.Stats{
 			TargetsRequested:  len(targets),
@@ -140,6 +145,9 @@ func (e *Engine) Run(ctx context.Context, targets []string) (*model.Result, erro
 	wg.Wait()
 
 	sort.Slice(hosts, func(i, j int) bool { return lessIP(hosts[i].IP, hosts[j].IP) })
+	if hosts == nil {
+		hosts = []model.Host{} // empty active scan: keep "hosts":[] on the wire
+	}
 	res.Hosts = hosts
 	e.fillStats(res, plan)
 
@@ -167,9 +175,14 @@ func hostParallelism(conc int) int {
 func (e *Engine) scanHost(ctx context.Context, ip string) (*model.Host, []model.PlanStep, model.HostVerdict) {
 	now := time.Now().UTC()
 	host := &model.Host{
-		IP:         ip,
-		State:      model.StateDown,
-		Names:      map[string]string{},
+		IP:    ip,
+		State: model.StateDown,
+		Names: map[string]string{},
+		// Services/Findings init non-nil: a host that answers with no open ports
+		// (refused connect) must still serialize "services":[]/"findings":[], not
+		// null, or pydantic rejects the list fields on the Python side.
+		Services:   []model.Service{},
+		Findings:   []model.Finding{},
 		Confidence: model.Probable,
 		FirstSeen:  now,
 		LastSeen:   now,

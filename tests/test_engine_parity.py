@@ -1,0 +1,159 @@
+"""Engine parity — the Go active-scan core and the Python engine must report the
+same reality.
+
+Both engines are driven through the *real* CLI against *real* loopback listeners,
+and their open-port sets must equal the sockets actually bound — and each other.
+This is the cross-engine half of the ground-truth guarantee (see
+test_ground_truth.py): a bridge that silently dropped or fabricated a service
+would pass a mocked test and fail here.
+
+Skips cleanly when the Go binary is not built, so the suite stays green without
+Go toolchain but proves parity wherever `banshee-engine` is present.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import socket
+
+import pytest
+from typer.testing import CliRunner
+
+from scanner.cli import app
+from scanner.engine_go import find_engine
+
+runner = CliRunner()
+
+
+@pytest.fixture
+def go_binary():
+    try:
+        return find_engine()
+    except RuntimeError as exc:  # not built / not on PATH
+        pytest.skip(str(exc))
+
+
+@pytest.fixture
+def loopback_scope(tmp_path):
+    p = tmp_path / "scope.yaml"
+    p.write_text(
+        "banner: TEST AUTHORIZED LOOPBACK ONLY\n"
+        "allowlist:\n  - 127.0.0.0/8\n"
+        "denylist: []\nmax_hosts_per_scan: 16\nmax_ports_per_host: 1000\n",
+        encoding="utf-8",
+    )
+    return str(p)
+
+
+@contextlib.contextmanager
+def listeners(count):
+    """Bind `count` TCP listeners on ephemeral loopback ports; yield their ports."""
+    socks = []
+    try:
+        for _ in range(count):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.bind(("127.0.0.1", 0))
+            s.listen(8)
+            socks.append(s)
+        yield [s.getsockname()[1] for s in socks]
+    finally:
+        for s in socks:
+            with contextlib.suppress(OSError):
+                s.close()
+
+
+def closed_port():
+    """Reserve then release an ephemeral port, so nothing is listening on it."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def scan(engine, scope_file, tmp_path, ports, binary):
+    out = tmp_path / f"{engine}.json"
+    result = runner.invoke(
+        app,
+        [
+            "127.0.0.1",
+            "--mode", "normal",
+            "-T", "4",
+            "--sniff-timeout", "0.5",
+            "--no-fingerprint",
+            "--engine", engine,
+            "--ports", ",".join(str(p) for p in ports),
+            "--scope", scope_file,
+            "--silent",
+            "--json", str(out),
+        ],
+        env={"BANSHEE_ENGINE": binary},
+    )
+    assert result.exit_code == 0, result.output
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def open_ports_of(data, ip="127.0.0.1"):
+    for host in data["hosts"]:
+        if host["ip"] == ip:
+            return {s["port"] for s in host["services"] if s["state"] == "open"}
+    return set()
+
+
+def test_go_engine_matches_ground_truth(go_binary, loopback_scope, tmp_path):
+    """The Go engine must report exactly the bound ports, and never a closed one."""
+    with listeners(3) as bound:
+        shut = closed_port()
+        assert shut not in bound
+        data = scan("go", loopback_scope, tmp_path, [*bound, shut], go_binary)
+
+    found = open_ports_of(data)
+    assert found == set(bound), f"go bound={sorted(bound)} closed={shut} reported={sorted(found)}"
+    assert shut not in found, f"go fabricated an open port: {shut} was never bound"
+
+
+def test_go_and_python_agree(go_binary, loopback_scope, tmp_path):
+    """Both engines, same targets, same truth — port-for-port."""
+    with listeners(2) as bound:
+        shut = closed_port()
+        ports = [*bound, shut]
+        py = scan("python", loopback_scope, tmp_path, ports, go_binary)
+        go = scan("go", loopback_scope, tmp_path, ports, go_binary)
+
+    assert open_ports_of(go) == open_ports_of(py) == set(bound)
+
+
+def test_go_reports_confirmed_and_sends_packets(go_binary, loopback_scope, tmp_path):
+    """A Go-reported port must carry CONFIRMED evidence and a real packet count.
+
+    Proves the confidence tier and source survive the JSON round-trip into pydantic,
+    and that packets_sent > 0 separates a real probe from an invented result.
+    """
+    with listeners(1) as bound:
+        data = scan("go", loopback_scope, tmp_path, bound, go_binary)
+
+    host = next(h for h in data["hosts"] if h["ip"] == "127.0.0.1")
+    assert host["state"] == "up"
+    svc = next(s for s in host["services"] if s["port"] == bound[0])
+    assert svc["confidence"] == "confirmed"
+    assert svc["source"] == "A3"
+    assert data["stats"]["packets_sent"] > 0
+
+
+def test_out_of_scope_target_is_refused(go_binary, loopback_scope, tmp_path):
+    """The Go path must honor the same scope contract: all-out-of-scope → exit 3."""
+    out = tmp_path / "oos.json"
+    result = runner.invoke(
+        app,
+        [
+            "8.8.8.8",
+            "--mode", "normal",
+            "--engine", "go",
+            "--scope", loopback_scope,
+            "--silent",
+            "--json", str(out),
+        ],
+        env={"BANSHEE_ENGINE": go_binary},
+    )
+    assert result.exit_code == 3, result.output

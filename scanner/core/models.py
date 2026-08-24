@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def _utcnow() -> datetime:
@@ -116,6 +116,22 @@ class Host(BaseModel):
     first_seen: datetime = Field(default_factory=_utcnow)
     last_seen: datetime = Field(default_factory=_utcnow)
 
+    @field_validator("services", "findings", mode="before")
+    @classmethod
+    def _null_to_empty_list(cls, v: object) -> object:
+        """Accept null for an empty collection from any JSON producer.
+
+        Go (the ``--engine go`` core) marshals a nil slice as JSON ``null``; the
+        default_factory only fires when the key is absent, not when it is present
+        and null. Coercing here lets the Go bridge deserialize with no special-casing.
+        """
+        return [] if v is None else v
+
+    @field_validator("names", mode="before")
+    @classmethod
+    def _null_to_empty_dict(cls, v: object) -> object:
+        return {} if v is None else v
+
     @property
     def best_name(self) -> str:
         """Friendliest display name available."""
@@ -149,6 +165,14 @@ class ScanConfig(BaseModel):
     retries: int | None = None
     threads: int | None = None
     max_detect_risk: int | None = None  # 0 = passive only
+
+    # active-scan engine: "python" (default, in-process asyncio) or "go" (the fast,
+    # low-memory static core; see scanner/engine_go.py). Passive/analysis/report
+    # stages are always Python regardless.
+    engine: str = "python"
+    # adaptive information-gain probe planner — Go engine only, for now. Selects
+    # probes by bits-per-unit-risk and stops early once a device class is confident.
+    adaptive: bool = False
 
     # port selection — None inherits the discoverer's default probe set
     ports: list[int] | None = None
@@ -208,6 +232,12 @@ class ScanResult(BaseModel):
     stats: ScanStats = Field(default_factory=ScanStats)
     started_at: datetime = Field(default_factory=_utcnow)
     finished_at: datetime | None = None
+
+    @field_validator("hosts", mode="before")
+    @classmethod
+    def _null_to_empty_list(cls, v: object) -> object:
+        """Tolerate a null hosts array from a JSON producer (see Host validators)."""
+        return [] if v is None else v
 
     @property
     def up_hosts(self) -> list[Host]:

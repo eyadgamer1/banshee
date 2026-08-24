@@ -201,7 +201,8 @@ async def test_llm_findings_are_capped_after_every_analysis_pass(monkeypatch, lo
     )
     guard = ScopeGuard.from_file(loopback_scope, audit=AuditLog(None))
     result = await _run_pipeline(
-        cfg, guard, StealthBudget.from_config(cfg), Console(quiet=True), live_enabled=False
+        cfg, guard, StealthBudget.from_config(cfg), Console(quiet=True),
+        live_enabled=False, scope_path=loopback_scope,
     )
 
     injected = [f for h in result.hosts for f in h.findings if f.id == "LLM-ESCAPE"]
