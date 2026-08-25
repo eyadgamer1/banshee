@@ -141,6 +141,41 @@ def test_go_reports_confirmed_and_sends_packets(go_binary, loopback_scope, tmp_p
     assert data["stats"]["packets_sent"] > 0
 
 
+def test_go_adaptive_surfaces_plan(go_binary, loopback_scope, tmp_path):
+    """--engine go --adaptive must carry the planner's audit trail into the report."""
+    with listeners(1) as bound:
+        # Well-known ports carry non-baseline device likelihoods, so the planner
+        # probes at least one (unlike ephemeral ports); the bound one is truly open.
+        ports = [135, 139, 445, *bound]
+        out = tmp_path / "adaptive.json"
+        result = runner.invoke(
+            app,
+            [
+                "127.0.0.1",
+                "--mode", "normal",
+                "-T", "4",
+                "--sniff-timeout", "0.5",
+                "--no-fingerprint",
+                "--engine", "go",
+                "--adaptive",
+                "--ports", ",".join(str(p) for p in ports),
+                "--scope", loopback_scope,
+                "--silent",
+                "--json", str(out),
+            ],
+            env={"BANSHEE_ENGINE": go_binary},
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(out.read_text(encoding="utf-8"))
+
+    plan = data["plan"]
+    assert plan is not None, "adaptive scan produced no plan block"
+    assert plan["probes_sent"] >= 1
+    assert plan["probes_planned"] >= plan["probes_sent"]
+    assert plan["probes_saved"] == plan["probes_planned"] - plan["probes_sent"]
+    assert plan["verdicts"] and plan["verdicts"][0]["class"], "no device classification"
+
+
 def test_out_of_scope_target_is_refused(go_binary, loopback_scope, tmp_path):
     """The Go path must honor the same scope contract: all-out-of-scope → exit 3."""
     out = tmp_path / "oos.json"

@@ -256,8 +256,8 @@ BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; 
 
 | Flag | Description |
 |---|---|
-| `--engine [python\|go]` | Active-scan core (default **`python`**). `go` delegates discovery/probing to the fast, low-memory static binary; passive capture, analysis and reporting stay Python either way |
-| `--adaptive` | Go only: pick probes by information-gain per unit of detection risk and stop early once a device class is confident (requires `--engine go`) |
+| `--engine [python\|go\|auto]` | Active-scan core (default **`python`**). `go` delegates discovery/probing to the fast, low-memory static binary; `auto` uses `go` when the binary is present, else `python`. Passive capture, analysis and reporting stay Python either way |
+| `--adaptive` | Go only: pick probes by information-gain per unit of detection risk and stop early once a device class is confident. The report and JSON then include a `plan` block — probes saved, detection risk spent, and per-host device classification (requires `--engine go`/`auto`) |
 
 > `--engine go` needs the binary built (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`) and found via `$BANSHEE_ENGINE`, your `PATH`, or the repo's `engine/` directory. See [The Go engine](#the-go-engine).
 

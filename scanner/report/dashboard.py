@@ -78,7 +78,30 @@ def render_result(console: Console, result: ScanResult, *, quiet: bool = False) 
         )
     console.print(table)
 
+    _render_plan(console, result)
     _render_findings(console, result)
+
+
+def _render_plan(console: Console, result: ScanResult) -> None:
+    """Show the adaptive planner's account (Go engine + --adaptive only)."""
+    plan = result.plan
+    if plan is None:
+        return
+    console.print(
+        f"[bold]adaptive plan[/bold]  probes [bold]{plan.probes_sent}[/bold]/"
+        f"{plan.probes_planned} sent ([green]{plan.probes_saved} saved[/green])  "
+        f"detection risk [bold]{plan.risk_spent}[/bold] of {plan.risk_of_full_scan} full-scan"
+    )
+    if not plan.verdicts:
+        return
+    table = Table(title="Device classification", box=SIMPLE_HEAVY, title_justify="left")
+    for column in ("Host", "Class", "Conf.", "Stopped by"):
+        table.add_column(column, overflow="fold")
+    for verdict in plan.verdicts:
+        table.add_row(
+            verdict.ip, verdict.device_class, f"{verdict.confidence:.3f}", verdict.stopped_by
+        )
+    console.print(table)
 
 
 def _render_findings(console: Console, result: ScanResult) -> None:

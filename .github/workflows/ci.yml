@@ -17,10 +17,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            engine_bin: banshee-engine
+          - os: windows-latest
+            engine_bin: banshee-engine.exe
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: engine/go.sum
+
+      - name: Go vet & test
+        working-directory: engine
+        run: |
+          go vet ./...
+          go test ./...
+
+      # Build into engine/ so the parity tests find it via the repo fallback and
+      # actually run (they skip when no binary is present).
+      - name: Build Go engine
+        working-directory: engine
+        run: go build -o ${{ matrix.engine_bin }} ./cmd/banshee-engine
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6

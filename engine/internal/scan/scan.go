@@ -116,9 +116,11 @@ func (e *Engine) Run(ctx context.Context, targets []string) (*model.Result, erro
 	}
 
 	var (
-		mu       sync.Mutex
-		hosts    []model.Host
-		plan     = &model.PlanReport{}
+		mu    sync.Mutex
+		hosts []model.Host
+		// Init the plan's slices non-nil so an adaptive run that recorded no steps
+		// still serializes "steps":[]/"verdicts":[], not null (pydantic rejects null).
+		plan     = &model.PlanReport{Steps: []model.PlanStep{}, Verdicts: []model.HostVerdict{}}
 		wg       sync.WaitGroup
 		hostSlot = make(chan struct{}, hostParallelism(e.budget.Concurrency))
 	)

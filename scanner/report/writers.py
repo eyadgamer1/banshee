@@ -50,7 +50,12 @@ class JsonWriter:
     format_name = "json"
 
     def write(self, result: ScanResult, path: Path) -> None:
-        _prepare(path).write_text(result.model_dump_json(indent=2), encoding="utf-8")
+        # by_alias so the adaptive plan's verdict class serializes as "class" (its
+        # only aliased field), keeping the Python-written JSON byte-identical to the
+        # Go engine's own output.
+        _prepare(path).write_text(
+            result.model_dump_json(indent=2, by_alias=True), encoding="utf-8"
+        )
 
 
 class CsvWriter:

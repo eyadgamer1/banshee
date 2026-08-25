@@ -26,7 +26,7 @@ from scanner.core.engine import ScanEngine, TargetTooLargeError
 from scanner.core.models import ScanConfig, ScanMode, ScanResult
 from scanner.core.scope import AuditLog, ScopeGuard, ScopeViolationError
 from scanner.correlate import build_attack_graph, build_segment_map
-from scanner.engine_go import run_go_engine
+from scanner.engine_go import resolve_engine, run_go_engine
 from scanner.intel import enrich_result, prioritize_result
 from scanner.llm import generate_report, run_react_loop
 from scanner.plugins import run_plugins
@@ -175,7 +175,7 @@ _SAFETY = "Safety"
 _MAINT = "Maintenance"
 _ENGINE = "Engine"
 
-_ENGINE_CHOICES = ("python", "go")
+_ENGINE_CHOICES = ("python", "go", "auto")
 
 # The default scope path is relative to the working directory. When BANSHEE is
 # installed as a tool (uv tool / pipx / pip) and run from an arbitrary directory,
@@ -303,7 +303,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         str,
         typer.Option(
             "--engine",
-            help="active-scan engine: python (default) or go (fast, low-memory core)",
+            help="active-scan engine: python (default), go (fast core), or auto (go if built)",
             rich_help_panel=_ENGINE,
         ),
     ] = "python",
@@ -440,8 +440,12 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         choices = ", ".join(_ENGINE_CHOICES)
         console.print(f"[red]error:[/red] unknown --engine {engine!r}; choose from {choices}")
         raise typer.Exit(code=2)
+    engine = resolve_engine(engine)  # 'auto' -> 'go' if the binary is built, else 'python'
     if adaptive and engine != "go":
-        console.print("[red]error:[/red] --adaptive requires --engine go")
+        console.print(
+            "[red]error:[/red] --adaptive needs the Go engine (pass --engine go, "
+            "or --engine auto with the binary built)"
+        )
         raise typer.Exit(code=2)
 
     if out_all:
@@ -508,7 +512,9 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
 
     if not silent and not quiet:
         console.print(f"[bold yellow][!] {guard.banner}[/bold yellow]")
-        console.print(f"[dim]mode={mode.value} -T{timing} fingerprint={do_fingerprint}[/dim]")
+        console.print(
+            f"[dim]mode={mode.value} -T{timing} engine={engine} fingerprint={do_fingerprint}[/dim]"
+        )
 
     if do_enrich and not silent:
         console.print(

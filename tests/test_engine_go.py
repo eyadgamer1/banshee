@@ -13,7 +13,13 @@ import socket
 import pytest
 
 from scanner.core.models import ScanConfig, ScanMode
-from scanner.engine_go import _needs_dns, build_args, find_engine, resolve_targets
+from scanner.engine_go import (
+    _needs_dns,
+    build_args,
+    find_engine,
+    resolve_engine,
+    resolve_targets,
+)
 
 
 def _fake_lookup(table):
@@ -77,6 +83,22 @@ def test_build_args_dry_run_forces_zero_risk():
     args = build_args(cfg, "scope.yaml", ["127.0.0.1"])
     i = args.index("-max-detect-risk")
     assert args[i + 1] == "0"  # dry-run wins over any max-detect-risk value
+
+
+def test_resolve_engine_auto_picks_go_when_built(monkeypatch):
+    monkeypatch.setattr("scanner.engine_go.find_engine", lambda: "/x/banshee-engine")
+    assert resolve_engine("auto") == "go"
+
+
+def test_resolve_engine_auto_falls_back_to_python(monkeypatch):
+    def boom():
+        raise RuntimeError("not built")
+
+    monkeypatch.setattr("scanner.engine_go.find_engine", boom)
+    assert resolve_engine("auto") == "python"
+    # explicit choices always pass through unchanged
+    assert resolve_engine("python") == "python"
+    assert resolve_engine("go") == "go"
 
 
 def test_find_engine_rejects_bad_env(monkeypatch, tmp_path):

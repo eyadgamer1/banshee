@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.1.0] — 2026-08-24
+
+One tool, two engines. The Go active-scan core and the Python tool are now a
+single command: Python is the mind (orchestration, passive capture, classification,
+LLM, the six report formats, the terminal GUI); Go is the hands (fast, low-memory
+active discovery, TCP probing, banner grabbing, and the adaptive probe planner).
+
+### Added
+
+- **`--engine [python|go|auto]`.** `go` delegates active discovery/probing to the
+  standalone binary and hands the result back to the full Python pipeline; `auto`
+  picks Go when the binary is present, else Python. Default stays `python`, so the
+  existing path is untouched and directly A/B-comparable. The Go binary is located
+  via `$BANSHEE_ENGINE`, `PATH`, or the repo's `engine/` directory.
+- **`--adaptive`** (Go engine): select probes by information gain per unit of
+  detection risk and stop early once a device class is confident. The planner's
+  audit trail — probes sent vs planned, probes saved, detection risk spent vs a
+  full scan, and per-host device classification — now surfaces in the report and
+  in the JSON output (a new optional `plan` block on `ScanResult`).
+- **Cross-engine parity tests** (`tests/test_engine_parity.py`): drive both engines
+  through the real CLI against real loopback listeners and assert they agree
+  port-for-port (skip cleanly when the Go binary is not built).
+- **CI now builds and tests the Go engine** (`go vet` + `go test`) on Linux and
+  Windows, so cross-engine parity is verified on every push.
+- **Release workflow** cross-compiles the Go engine for linux/amd64, linux/arm64,
+  windows/amd64, and darwin amd64/arm64 and attaches the binaries to a GitHub
+  Release on a version tag.
+
+### Fixed
+
+- **`--engine go` with a hostname target was refused.** The Go engine does no DNS,
+  so a raw hostname never matched the IP allowlist and looked out of scope. Python
+  now resolves hostnames to IPs before handing the Go engine concrete targets,
+  mirroring the Python engine's own resolver, so both engines see the same
+  in-scope target set.
+- **Empty collections serialized as `null`.** A Go host with no open ports (and an
+  empty scan) emitted `"services":null`/`"findings":null`/`"hosts":null`, which the
+  pydantic models reject for a list field. The Go engine now emits `[]`, and the
+  Python models tolerantly coerce `null` to `[]`/`{}` from any producer.
+
 ## [1.0.1] — 2026-08-21
 
 Integration release. Three features shipped in 1.0.0 were implemented, tested and

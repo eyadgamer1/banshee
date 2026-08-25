@@ -79,6 +79,21 @@ def find_engine() -> str:
     raise RuntimeError(_build_hint())
 
 
+def resolve_engine(engine: str) -> str:
+    """Resolve the ``auto`` engine choice to a concrete one.
+
+    ``auto`` picks the Go engine when its binary is available, else falls back to
+    the in-process Python engine. ``python``/``go`` pass through unchanged.
+    """
+    if engine != "auto":
+        return engine
+    try:
+        find_engine()
+        return "go"
+    except RuntimeError:
+        return "python"
+
+
 def _needs_dns(token: str) -> bool:
     """True only for a plain hostname — not an IP, CIDR, or IP range.
 
@@ -239,5 +254,7 @@ async def run_go_engine(cfg: ScanConfig, guard: ScopeGuard, scope_path: str) -> 
         kwargs["started_at"] = data["started_at"]
     if data.get("finished_at"):
         kwargs["finished_at"] = data["finished_at"]
+    if data.get("plan"):  # adaptive audit trail — present only with -adaptive
+        kwargs["plan"] = data["plan"]
 
     return ScanResult(**kwargs)

@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def _utcnow() -> datetime:
@@ -223,6 +223,51 @@ class ScanStats(BaseModel):
     packets_sent: int = 0
 
 
+class PlanStep(BaseModel):
+    """One adaptive probe: what was chosen, what it bought, and the posterior after."""
+
+    ip: str
+    port: int
+    expected_bits: float
+    risk: float
+    outcome: str
+    posterior_top: str
+    posterior_prob: float
+
+
+class PlanVerdict(BaseModel):
+    """Per-host adaptive conclusion: device class, confidence, and why it stopped."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    ip: str
+    device_class: str = Field(alias="class")  # 'class' is reserved; Go emits "class"
+    confidence: float
+    probes: int
+    stopped_by: str
+
+
+class ScanPlan(BaseModel):
+    """Audit trail for an adaptive scan (Go engine): what was probed and what it saved.
+
+    Populated only when the Go engine ran with --adaptive; None on the Python path.
+    Lets the operator defend the scan — probes skipped and detection risk avoided.
+    """
+
+    probes_planned: int = 0
+    probes_sent: int = 0
+    probes_saved: int = 0
+    risk_spent: float = 0.0
+    risk_of_full_scan: float = 0.0
+    steps: list[PlanStep] = Field(default_factory=list)
+    verdicts: list[PlanVerdict] = Field(default_factory=list)
+
+    @field_validator("steps", "verdicts", mode="before")
+    @classmethod
+    def _null_to_empty_list(cls, v: object) -> object:
+        return [] if v is None else v
+
+
 class ScanResult(BaseModel):
     """Top-level scan output — serialized by every report writer (E3)."""
 
@@ -232,6 +277,7 @@ class ScanResult(BaseModel):
     stats: ScanStats = Field(default_factory=ScanStats)
     started_at: datetime = Field(default_factory=_utcnow)
     finished_at: datetime | None = None
+    plan: ScanPlan | None = None  # adaptive audit trail; set only by the Go engine
 
     @field_validator("hosts", mode="before")
     @classmethod
