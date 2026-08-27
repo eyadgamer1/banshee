@@ -196,29 +196,31 @@ By default BANSHEE only scans **loopback and RFC1918 (private) ranges**. Public 
 
 ## The live interface
 
-BANSHEE renders a live dashboard while it works, then prints a clean summary. Below is a **real run** against loopback (`127.0.0.1`) — the banner art is trimmed for width; the stats line and host table are verbatim:
+BANSHEE renders a live dashboard while it works, then prints a clean summary. Below is a **real run** against loopback (`127.0.0.1`), verbatim:
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │   ██████╗  █████╗ ███╗   ██╗███████╗██╗  ██╗███████╗███████╗                │
 │   ██╔══██╗██╔══██╗████╗  ██║██╔════╝██║  ██║██╔════╝██╔════╝                │
 │   ██████╔╝███████║██╔██╗ ██║███████╗███████║█████╗  █████╗                  │
+│   ██╔══██╗██╔══██║██║╚██╗██║╚════██║██╔══██║██╔══╝  ██╔══╝                  │
 │   ██████╔╝██║  ██║██║ ╚████║███████║██║  ██║███████╗███████╗                │
+│   ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝╚══════╝╚══════╝                │
 │   She sees everything you left exposed.                                     │
-│   Broad-Area Network Scanner …                                  |  v1.0.1   │
+│   Broad-Area Network Scanner for Host Enumeration and Exposure  |  v1.2.0   │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 [!] AUTHORIZED TARGETS ONLY - loopback + RFC1918 default scope
-mode=normal -T4 fingerprint=True
+mode=normal -T4 engine=python fingerprint=True
 
-hosts up 1  services 2  findings 0  in-scope 1  out-of-scope 0  packets 7
+hosts up 1  services 2  findings 0  in-scope 1  out-of-scope 0  packets 6
 
  IP          Name                         MAC   Vendor   OS        Ports      Conf.
  ──────────────────────────────────────────────────────────────────────────────────
  127.0.0.1   kubernetes.docker.internal               Windows   135, 445   confirmed
 ```
 
-The `Conf.` column is the trust grade. `packets 7` is the exact number of probes sent — passive runs show `packets 0`. During a longer scan the dashboard shows a per-host table updating live (discovering → fingerprinting → done) with a running stats bar.
+The `Conf.` column is the trust grade. `mode=normal -T4 engine=python` echoes the two intensity dials and the active-scan engine in force. `packets 6` is the exact number of probes sent — passive runs show `packets 0`. During a longer scan the dashboard shows a per-host table updating live (discovering → fingerprinting → done) with a running stats bar.
 
 Colour and detail are controlled independently from scan intensity — see the two dials below.
 
