@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.5.0] — 2026-08-27
+
+Deception/honeypot signals — `--deception`.
+
+### Added
+
+- **`--deception`** — flag hosts that show signals of being a decoy or honeypot,
+  from data already collected (local, **zero packets**). Signals: an unusually
+  large number of open services, a cluster of classic legacy bait ports
+  (telnet/ftp/mysql/vnc/…), a Windows-vs-Unix service/banner contradiction, and
+  known honeypot-framework tokens in a banner (Cowrie, Dionaea, …).
+
+  Honesty first: a honeypot cannot be proven from the outside, so the result is
+  always a single **POTENTIAL** finding per host, worded as a lead to verify and
+  never a verdict, carrying the exact signals that triggered it. A single weak
+  signal never fires on its own, so an ordinary server (web + SSH) is left alone —
+  covered by a false-positive test on a real loopback host.
+
 ## [1.4.0] — 2026-08-27
 
 Compare two scans — `banshee diff`.

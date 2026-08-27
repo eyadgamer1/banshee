@@ -199,6 +199,9 @@ class ScanConfig(BaseModel):
     ssvc: bool = False
     plugins: bool = False
     agentic: bool = False
+    # C8 deception/honeypot signal analysis — local, zero packets. Emits at most
+    # one POTENTIAL finding per host from already-collected data.
+    deception: bool = False
 
     # persistence
     db: str | None = None

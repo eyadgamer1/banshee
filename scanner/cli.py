@@ -27,7 +27,7 @@ from scanner.core.budget import StealthBudget
 from scanner.core.engine import ScanEngine, TargetTooLargeError
 from scanner.core.models import ScanConfig, ScanMode, ScanResult
 from scanner.core.scope import AuditLog, ScopeGuard, ScopeViolationError
-from scanner.correlate import build_attack_graph, build_segment_map
+from scanner.correlate import build_attack_graph, build_segment_map, score_deception
 from scanner.engine_go import resolve_engine, run_go_engine
 from scanner.intel import enrich_result, prioritize_result
 from scanner.llm import generate_report, run_react_loop
@@ -116,6 +116,13 @@ async def _run_pipeline(
         n_plugin = run_plugins(result)
         if not silent:
             console.print(f"[dim]E1 plugins: {n_plugin} findings added[/dim]")
+
+    # C8 — deception/honeypot signals (local, zero packets). Runs before
+    # tier_result so its POTENTIAL findings pass through the confidence policy.
+    if cfg.deception:
+        n_decoy = score_deception(result)
+        if not silent:
+            console.print(f"[dim]C8 deception: {n_decoy} host(s) flagged (POTENTIAL)[/dim]")
 
     # C4 — external intel enrichment (data leaves host)
     if cfg.enrich:
@@ -396,6 +403,11 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         typer.Option("--plugins", help="apply YAML plugin rules from config/plugins/",
                      rich_help_panel=_TOGGLES),
     ] = False,
+    do_deception: Annotated[
+        bool,
+        typer.Option("--deception", help="flag possible honeypot/decoy hosts (local, 0 packets)",
+                     rich_help_panel=_TOGGLES),
+    ] = False,
     # --- persistence ---
     db: Annotated[
         str | None,
@@ -532,6 +544,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         ssvc=do_ssvc,
         plugins=do_plugins,
         agentic=do_agentic,
+        deception=do_deception,
         db=db,
         baseline=baseline,
         scope_file=scope_file,

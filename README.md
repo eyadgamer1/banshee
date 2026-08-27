@@ -40,6 +40,7 @@
 - [Prove the results are real](#prove-the-results-are-real)
 - [Output formats](#output-formats)
 - [Compare two scans — `banshee diff`](#compare-two-scans--banshee-diff)
+- [Spot a decoy — `--deception`](#spot-a-decoy--deception)
 - [Troubleshooting](#troubleshooting)
 - [Ethics & license](#ethics--license)
 
@@ -288,6 +289,7 @@ BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; 
 | `--classify / --no-classify` | Device classification — local, **zero packets** (default on) |
 | `--ssvc` | SSVC priority tags on findings (local) |
 | `--plugins` | Apply YAML detection rules from `config/plugins/` |
+| `--deception` | Flag possible honeypot/decoy hosts from collected data — local, **zero packets**. Always a `POTENTIAL` lead, never a verdict |
 | `--enrich` | EPSS + CISA KEV enrichment — **data leaves your host** |
 | `--agentic` | ReAct LLM analysis via a local Ollama model |
 
@@ -492,7 +494,7 @@ uv run pytest tests/test_ground_truth.py -v
 10 passed
 ```
 
-The full suite (283 tests) proves the hard cases against reality on loopback:
+The full suite (287 tests) proves the hard cases against reality on loopback:
 cross-engine **parity** (Python and Go agree port-for-port), **UDP ground
 truth** — a replying UDP port is reported `open`, a silent one is `open|filtered`
 and *never* a fake "open" — and **service-version honesty**, that `-sV` extracts a
@@ -545,6 +547,25 @@ banshee diff monday.json friday.json          # add --json delta.json for CI
 It is a pure comparison of the two files — no network, no inference — and an
 ambiguous `open|filtered` port counts as neither open nor closed, so it never
 reports a change it cannot prove.
+
+---
+
+## Spot a decoy — `--deception`
+
+`--deception` flags hosts that *look* like a honeypot or decoy, using only data
+already collected — it sends **zero packets**. It weighs a few signals: an
+unusually large number of open services, a cluster of classic bait ports
+(telnet, ftp, mysql, vnc…), a Windows-vs-Unix contradiction between ports and
+banners, and known honeypot-framework tokens in a banner (Cowrie, Dionaea…).
+
+```bash
+banshee 10.0.0.0/24 -m normal --engine go -sV --deception --html report.html
+```
+
+Because a honeypot can't be proven from the outside, the result is **always a
+single `POTENTIAL` finding** per host — worded as a lead to verify, never a
+verdict — listing the exact signals that fired. A single weak signal never fires
+alone, so an ordinary web+SSH server is left untouched.
 
 ---
 
