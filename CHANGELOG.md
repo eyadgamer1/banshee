@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.4.0] — 2026-08-27
+
+Compare two scans — `banshee diff`.
+
+### Added
+
+- **`banshee diff OLD.json NEW.json`** — compare two BANSHEE JSON reports and
+  show what changed between them: hosts that appeared or vanished, ports that
+  opened or closed, and — pairing with `-sV` — services whose product/version
+  changed, which is a real security signal (a patched or downgraded daemon shows
+  up immediately). Add `--json OUT` to write the delta as JSON for CI. It is a
+  pure comparison of the two inputs — no network, no inference — and an ambiguous
+  `open|filtered` port is treated as neither open nor closed, so it never invents
+  a spurious change.
+
+  `diff` is a second verb on the same `banshee` command; the primary
+  `banshee <targets>` scan form is unchanged.
+
 ## [1.3.0] — 2026-08-27
 
 Service and version identification — `-sV` — and a packaging fix.

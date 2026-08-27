@@ -1,6 +1,6 @@
 [project]
 name = "banshee-scanner"
-version = "1.3.0"
+version = "1.4.0"
 description = "BANSHEE — passive-first network scanner. No exploitation."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.scripts]
-banshee = "scanner.cli:app"
+banshee = "scanner.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/eyadgamer1/banshee"

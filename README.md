@@ -39,6 +39,7 @@
 - [Scope & authorization](#scope--authorization)
 - [Prove the results are real](#prove-the-results-are-real)
 - [Output formats](#output-formats)
+- [Compare two scans — `banshee diff`](#compare-two-scans--banshee-diff)
 - [Troubleshooting](#troubleshooting)
 - [Ethics & license](#ethics--license)
 
@@ -491,7 +492,7 @@ uv run pytest tests/test_ground_truth.py -v
 10 passed
 ```
 
-The full suite (278 tests) proves the hard cases against reality on loopback:
+The full suite (283 tests) proves the hard cases against reality on loopback:
 cross-engine **parity** (Python and Go agree port-for-port), **UDP ground
 truth** — a replying UDP port is reported `open`, a silent one is `open|filtered`
 and *never* a fake "open" — and **service-version honesty**, that `-sV` extracts a
@@ -515,6 +516,35 @@ so the parity, UDP and `-sV` tests execute, not skip.
 | SQLite | `--db` | Cross-run history + rogue detection |
 
 All six file formats can be written at once with `-A BASE`. A JSONL audit trail of the run is written alongside.
+
+---
+
+## Compare two scans — `banshee diff`
+
+Save a JSON report now, another later, and `banshee diff` tells you exactly what
+changed — new or vanished hosts, ports that opened or closed, and (with `-sV`)
+**service versions that changed**, which is often the first sign of a patched,
+downgraded, or swapped daemon.
+
+```bash
+banshee 10.0.0.0/24 -m normal --engine go -sV --json monday.json
+# … a week later …
+banshee 10.0.0.0/24 -m normal --engine go -sV --json friday.json
+banshee diff monday.json friday.json          # add --json delta.json for CI
+```
+
+```text
++ new host 10.0.0.42  (22/tcp ssh (OpenSSH 9.6p1), 80/tcp http)
+- gone host 10.0.0.9
+~ 10.0.0.5
+    + opened 8080/tcp http-alt
+    - closed 23/tcp telnet
+    ~ changed 22/tcp  OpenSSH 8.9p1 -> OpenSSH 9.9p1
+```
+
+It is a pure comparison of the two files — no network, no inference — and an
+ambiguous `open|filtered` port counts as neither open nor closed, so it never
+reports a change it cannot prove.
 
 ---
 

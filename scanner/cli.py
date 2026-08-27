@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 
 from scanner import __version__, discovery, fingerprint, report, risk
@@ -30,6 +32,7 @@ from scanner.engine_go import resolve_engine, run_go_engine
 from scanner.intel import enrich_result, prioritize_result
 from scanner.llm import generate_report, run_react_loop
 from scanner.plugins import run_plugins
+from scanner.report.diff import compute_diff, render_diff
 from scanner.store import RogueDetector, ScanStore
 from scanner.ui import print_banner
 
@@ -602,5 +605,58 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             console.print(f"[yellow]skip[/yellow] {fmt}: writer not available yet")
 
 
+# The `diff` verb lives in its own single-command Typer app rather than as a
+# second command on `app`. Adding a second command to `app` would flip Typer into
+# multi-command mode, where the primary `banshee <targets>` form (and every test
+# that drives it) would require an explicit `scan` subcommand. main() dispatches
+# on the first token instead, so the scan surface is untouched.
+diff_app = typer.Typer(
+    add_completion=False,
+    rich_markup_mode="rich",
+    help="Compare two BANSHEE JSON reports and show what changed.",
+)
+
+
+@diff_app.command()
+def diff(
+    old: Annotated[
+        Path,
+        typer.Argument(exists=True, dir_okay=False, help="earlier BANSHEE JSON report"),
+    ],
+    new: Annotated[
+        Path,
+        typer.Argument(exists=True, dir_okay=False, help="later BANSHEE JSON report"),
+    ],
+    out_json: Annotated[
+        str | None, typer.Option("--json", help="write the diff as JSON too")
+    ] = None,
+    no_color: Annotated[bool, typer.Option("--no-color", help="disable ANSI colour")] = False,
+) -> None:
+    """Diff two scan reports: new/gone hosts, opened/closed ports, version changes."""
+    console = Console(no_color=no_color)
+    try:
+        old_result = ScanResult.model_validate_json(old.read_text(encoding="utf-8"))
+        new_result = ScanResult.model_validate_json(new.read_text(encoding="utf-8"))
+    except (OSError, ValidationError) as exc:
+        console.print(f"[red]error:[/red] could not read a BANSHEE JSON report: {exc}")
+        raise typer.Exit(code=2) from exc
+
+    delta = compute_diff(old_result, new_result)
+    if out_json:
+        Path(out_json).write_text(delta.model_dump_json(indent=2), encoding="utf-8")
+        console.print(f"[green]wrote[/green] diff -> {out_json}")
+    render_diff(delta, console)
+
+
+def main() -> None:
+    """Console entry point. Routes `banshee diff ...` to the diff app and every
+    other invocation to the scan command, so both verbs share one `banshee`."""
+    argv = sys.argv[1:]
+    if argv and argv[0] == "diff":
+        diff_app(args=argv[1:])
+    else:
+        app()
+
+
 if __name__ == "__main__":
-    app()
+    main()
