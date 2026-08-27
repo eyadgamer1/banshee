@@ -323,6 +323,15 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             rich_help_panel=_ENGINE,
         ),
     ] = False,
+    service_scan: Annotated[
+        bool,
+        typer.Option(
+            "--service-scan",
+            "-sV",
+            help="Go engine: identify service product/version from banners (needs --engine go)",
+            rich_help_panel=_ENGINE,
+        ),
+    ] = False,
     # --- output files ---
     out_txt: Annotated[
         str | None, typer.Option("--txt", help="write text report", rich_help_panel=_OUTPUT)
@@ -467,6 +476,18 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             "(the adaptive planner is TCP-only)"
         )
         raise typer.Exit(code=2)
+    if service_scan and engine != "go":
+        console.print(
+            "[red]error:[/red] -sV/--service-scan needs the Go engine (pass --engine go, "
+            "or --engine auto with the binary built)"
+        )
+        raise typer.Exit(code=2)
+    if service_scan and udp:
+        console.print(
+            "[red]error:[/red] -sV/--service-scan probes TCP service banners and does not "
+            "apply to a --udp sweep"
+        )
+        raise typer.Exit(code=2)
 
     if out_all:
         out_txt = out_txt or f"{out_all}.txt"
@@ -500,6 +521,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         engine=engine,
         adaptive=adaptive,
         udp=udp,
+        service_scan=service_scan,
         fingerprint=do_fingerprint,
         names=do_names,
         classify=do_classify,

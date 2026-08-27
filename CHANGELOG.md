@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.3.0] — 2026-08-27
+
+Service and version identification — `-sV` — and a packaging fix.
+
+### Added
+
+- **`-sV` / `--service-scan`** (Go engine): identify a service's product and
+  version. Match-only, so it never fabricates an identity:
+  - a **free** layer, always on, parses the server-first banner the TCP probe
+    already captured (SSH, FTP, SMTP, …) and extracts product + version — no
+    extra packet;
+  - an **active** layer, only under `-sV`, sends one protocol probe (an HTTP
+    `GET /`) to an *open but silent* HTTP port to draw out a `Server:` header.
+
+  Product and version are set **only** when a captured banner matches a
+  signature; a port that answers with nothing matchable is reported open with no
+  invented version, exactly as a silent UDP port is `open|filtered` and never
+  `open`. Verified live against `scanme.nmap.org`: `22/tcp` → OpenSSH 6.6.1p1,
+  `80/tcp` → Apache 2.4.7, both from real banner bytes. `-sV` needs `--engine
+  go`/`auto` and is TCP-only (not combined with `--udp`).
+- **Ground-truth `-sV` tests** in both engines: a server-first banner is parsed
+  to product+version; the active HTTP probe fires only on HTTP ports; and a
+  silent open port never gets a fabricated identity.
+
+### Fixed
+
+- **`--no-fingerprint` silently disabled `-sV`.** It emits `-banners=false`,
+  which turned off the banner reads `-sV` depends on. The engine now forces
+  banners on whenever `-sV` is set, so the flag cannot be defeated by an
+  unrelated toggle.
+
 ## [1.2.0] — 2026-08-25
 
 UDP scanning — done honestly.

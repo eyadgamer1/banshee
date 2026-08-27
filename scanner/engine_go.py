@@ -179,6 +179,8 @@ def build_args(cfg: ScanConfig, scope_path: str, targets: list[str]) -> list[str
         args.append("-adaptive")
     if cfg.udp:
         args.append("-udp")
+    if cfg.service_scan:
+        args.append("-sV")
     if not cfg.fingerprint:
         args.append("-banners=false")
 

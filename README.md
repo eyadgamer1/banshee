@@ -274,6 +274,7 @@ BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; 
 | `--engine [python\|go\|auto]` | Active-scan core (default **`python`**). `go` delegates discovery/probing to the fast, low-memory static binary; `auto` uses `go` when the binary is present, else `python`. Passive capture, analysis and reporting stay Python either way |
 | `--adaptive` | Go only: pick probes by information-gain per unit of detection risk and stop early once a device class is confident. The report and JSON then include a `plan` block — probes saved, detection risk spent, and per-host device classification (requires `--engine go`/`auto`) |
 | `--udp` | Go only: UDP scan (like `nmap -sU`). A replying port is **open**, an ICMP-unreachable is **closed**, and a **silent** port is honestly **`open\|filtered`** — never a fake "open" (requires `--engine go`/`auto`; mutually exclusive with `--adaptive`) |
+| `-sV, --service-scan` | Go only: identify a service's **product + version** from its banner. Match-only — a version is reported **only** when a captured banner matches a signature, never guessed from the port (requires `--engine go`/`auto`; TCP-only) |
 
 > `--engine go` needs the binary built (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`) and found via `$BANSHEE_ENGINE`, your `PATH`, or the repo's `engine/` directory. See [The Go engine](#the-go-engine).
 
@@ -414,6 +415,36 @@ banshee 192.168.1.10 --engine go --udp -p 53,123,161,500,1900 --json udp.json
 `--udp` is UDP-only (like `nmap -sU`) and cannot be combined with `--adaptive`
 (the adaptive planner models TCP detection risk).
 
+### Service & version — `-sV`
+
+`-sV` identifies the **product and version** behind an open TCP port — and, like
+everything else in BANSHEE, it reports a version **only when a real banner proves
+it**, never a guess from the port number. It works in two layers:
+
+- a **free** layer, always on, reads the greeting a service sends first (SSH,
+  FTP, SMTP, …) and matches it — no extra packet;
+- an **active** layer, only under `-sV`, sends one `GET /` to an open-but-silent
+  HTTP port to pull its `Server:` header.
+
+A port whose banner matches nothing is still reported open, just with no version —
+the same honesty rule that makes a silent UDP port `open\|filtered` and not `open`.
+
+```bash
+banshee scanme.nmap.org -p 22,80 --engine go -sV --json out.json
+```
+
+Real output (`scanme.nmap.org`, which the Nmap Project authorizes for scanning):
+
+```text
+22/tcp open  ssh   product=OpenSSH version=6.6.1p1   confirmed
+   banner: SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13
+80/tcp open  http  product=Apache  version=2.4.7     confirmed
+   banner: HTTP/1.1 200 OK … Server: Apache/2.4.7 (Ubuntu)
+```
+
+Both versions came straight from the bytes those services returned. `-sV` needs
+`--engine go`/`auto` and is TCP-only (not combined with `--udp`).
+
 ---
 
 ## Scope & authorization
@@ -460,12 +491,14 @@ uv run pytest tests/test_ground_truth.py -v
 10 passed
 ```
 
-The full suite (277 tests) proves the hard cases against reality on loopback:
-cross-engine **parity** (Python and Go agree port-for-port), and **UDP ground
+The full suite (278 tests) proves the hard cases against reality on loopback:
+cross-engine **parity** (Python and Go agree port-for-port), **UDP ground
 truth** — a replying UDP port is reported `open`, a silent one is `open|filtered`
-and *never* a fake "open". The Go engine carries its own ground-truth tests
-(`cd engine && go test ./...`). Everything runs on every push via CI on Linux and
-Windows — including the Go build, so the parity and UDP tests execute, not skip.
+and *never* a fake "open" — and **service-version honesty**, that `-sV` extracts a
+product/version only from a real banner and invents nothing for a silent port. The
+Go engine carries its own ground-truth tests (`cd engine && go test ./...`).
+Everything runs on every push via CI on Linux and Windows — including the Go build,
+so the parity, UDP and `-sV` tests execute, not skip.
 
 ---
 

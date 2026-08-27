@@ -55,6 +55,7 @@ type Options struct {
 	Adaptive     bool
 	Banners      bool
 	UDP          bool             // also sweep the candidate ports over UDP
+	ServiceScan  bool             // -sV: actively probe silent open ports for a version banner
 	PerHostProbe adaptive.Options // planner tuning when Adaptive is on
 }
 
@@ -68,6 +69,12 @@ type Engine struct {
 }
 
 func NewEngine(g *scope.Guard, b *budget.Budget, o Options) *Engine {
+	// -sV is meaningless without banner reads: it identifies a service from the
+	// bytes a banner carries. Force them on so "-sV -banners=false" (or the
+	// Python --no-fingerprint that emits it) can't silently defeat the flag.
+	if o.ServiceScan {
+		o.Banners = true
+	}
 	return &Engine{guard: g, budget: b, opts: o}
 }
 
@@ -309,6 +316,11 @@ func (e *Engine) probe(ctx context.Context, ip string, port int) probeResult {
 	pr.confidence = model.Confirmed
 	if e.opts.Banners {
 		pr.banner = readBanner(conn)
+		if pr.banner == "" && e.opts.ServiceScan {
+			// The service did not speak first; -sV lets us send one protocol
+			// probe on the connection we already hold to draw out a version.
+			pr.banner = activeBanner(conn, port)
+		}
 	}
 	return pr
 }
@@ -336,6 +348,12 @@ func (e *Engine) service(pr probeResult) model.Service {
 	}
 	if pr.banner != "" {
 		svc.Banner = model.Ptr(pr.banner)
+		// Match-only: product/version are set only when the captured banner
+		// matches a signature, never inferred from the port.
+		if product, version := matchService(pr.banner); product != "" {
+			svc.Product = model.Ptr(product)
+			svc.Version = model.Ptr(version)
+		}
 	}
 	return svc
 }

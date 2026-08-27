@@ -179,6 +179,10 @@ class ScanConfig(BaseModel):
     # UDP scan (Go engine only): probe ports over UDP. A silent port is reported
     # open|filtered — never plain open. Mutually exclusive with adaptive (which is TCP).
     udp: bool = False
+    # service/version identification (Go engine only, -sV): probe silent open TCP
+    # ports for a version banner. Product/version are set only on a signature match,
+    # never inferred from the port. TCP-only, so not combined with udp.
+    service_scan: bool = False
 
     # port selection — None inherits the discoverer's default probe set
     ports: list[int] | None = None

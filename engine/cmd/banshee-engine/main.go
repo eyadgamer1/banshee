@@ -54,6 +54,7 @@ func run() int {
 		maxRisk    = fs.Int("max-detect-risk", -1, "0..10; 0 forces passive (-1 = mode default)")
 		adaptiveOn = fs.Bool("adaptive", false, "select probes by information gain per unit risk")
 		udpOn      = fs.Bool("udp", false, "also sweep ports over UDP (open|filtered when silent)")
+		serviceOn  = fs.Bool("sV", false, "probe silent open ports for a version banner (sends a probe)")
 		banners    = fs.Bool("banners", true, "read server-first banners (sends no extra packet)")
 		confidence = fs.Float64("confidence", 0.85, "adaptive: stop when class posterior reaches this")
 		hostRisk   = fs.Float64("host-risk-budget", 0, "adaptive: cap detection risk per host (0 = none)")
@@ -108,10 +109,11 @@ func run() int {
 	})
 
 	eng := scan.NewEngine(guard, b, scan.Options{
-		Ports:    ports,
-		Adaptive: *adaptiveOn,
-		UDP:      *udpOn,
-		Banners:  *banners,
+		Ports:       ports,
+		Adaptive:    *adaptiveOn,
+		UDP:         *udpOn,
+		ServiceScan: *serviceOn,
+		Banners:     *banners,
 		PerHostProbe: adaptive.Options{
 			Confidence: *confidence,
 			MaxRisk:    *hostRisk,

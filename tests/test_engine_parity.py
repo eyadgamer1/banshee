@@ -74,6 +74,37 @@ def closed_port():
 
 
 @contextlib.contextmanager
+def banner_socket(greeting: bytes):
+    """Bind a loopback TCP socket that speaks `greeting` first on accept — a
+    server-first service, so -sV can identify it with no active probe."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    s.listen(8)
+    s.settimeout(0.3)
+    port = s.getsockname()[1]
+    stop = threading.Event()
+
+    def serve():
+        while not stop.is_set():
+            try:
+                conn, _ = s.accept()
+            except (TimeoutError, OSError):
+                continue
+            with contextlib.suppress(OSError):
+                conn.sendall(greeting)
+            conn.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    try:
+        yield port
+    finally:
+        stop.set()
+        t.join(timeout=1)
+        s.close()
+
+
+@contextlib.contextmanager
 def udp_socket(*, reply: bool):
     """Bind a loopback UDP socket. reply=True echoes (provably open); reply=False
     drains but never answers (open|filtered — open yet indistinguishable from filtered).
@@ -240,6 +271,44 @@ def test_go_udp_ground_truth(go_binary, loopback_scope, tmp_path):
     assert svc[up_open]["confidence"] == "confirmed"
     assert svc[up_silent]["state"] == "open|filtered"
     assert svc[up_silent]["confidence"] == "potential"
+
+
+def test_go_service_scan_identifies_version(go_binary, loopback_scope, tmp_path):
+    """-sV through the real CLI: a server-first banner is parsed to product+version,
+    and a silent open port gets no fabricated identity — match-only, end to end."""
+    with banner_socket(b"SSH-2.0-OpenSSH_9.9p1 Test\r\n") as speaks, listeners(1) as silent:
+        out = tmp_path / "sv.json"
+        result = runner.invoke(
+            app,
+            [
+                "127.0.0.1",
+                "--mode", "normal",
+                "-T", "4",
+                "--sniff-timeout", "0.5",
+                "--no-fingerprint",
+                "--engine", "go",
+                "-sV",
+                "--ports", f"{speaks},{silent[0]}",
+                "--scope", loopback_scope,
+                "--silent",
+                "--json", str(out),
+            ],
+            env={"BANSHEE_ENGINE": go_binary},
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(out.read_text(encoding="utf-8"))
+
+    host = next(h for h in data["hosts"] if h["ip"] == "127.0.0.1")
+    svc = {s["port"]: s for s in host["services"]}
+    # Server-first banner -> identified even though --no-fingerprint tried to
+    # disable banners (-sV forces them on).
+    assert svc[speaks]["product"] == "OpenSSH"
+    assert svc[speaks]["version"] == "9.9p1"
+    assert svc[speaks]["confidence"] == "confirmed"
+    # Silent open port -> open and confirmed, but no invented product/version.
+    assert svc[silent[0]]["state"] == "open"
+    assert svc[silent[0]]["product"] is None
+    assert svc[silent[0]]["version"] is None
 
 
 def test_out_of_scope_target_is_refused(go_binary, loopback_scope, tmp_path):
