@@ -54,6 +54,7 @@ type Options struct {
 	Ports        []int
 	Adaptive     bool
 	Banners      bool
+	UDP          bool             // also sweep the candidate ports over UDP
 	PerHostProbe adaptive.Options // planner tuning when Adaptive is on
 }
 
@@ -70,12 +71,17 @@ func NewEngine(g *scope.Guard, b *budget.Budget, o Options) *Engine {
 	return &Engine{guard: g, budget: b, opts: o}
 }
 
-// probeResult is one connect outcome, the atom everything else is built from.
+// probeResult is one probe outcome, the atom everything else is built from. It
+// carries its own proto/source/confidence so TCP connects and UDP datagrams flow
+// through the same record/service path without special-casing.
 type probeResult struct {
-	port    int
-	state   model.PortState
-	banner  string
-	upProof bool // connect or refused — either proves the host answered
+	port       int
+	proto      string // "tcp" | "udp"
+	state      model.PortState
+	banner     string
+	source     string
+	confidence model.ConfidenceTier
+	upProof    bool // reply or refusal — either proves the host answered
 }
 
 // Run scans every in-scope target concurrently and returns a fully populated
@@ -202,12 +208,24 @@ func (e *Engine) scanHost(ctx context.Context, ip string) (*model.Host, []model.
 			answered = true
 			host.State = model.StateUp
 		}
-		if pr.state == model.PortOpen {
+		// A confirmed-open port and an honest UDP open|filtered both become a
+		// service. open|filtered rides along only when something else proved the
+		// host up — silence never invents a host.
+		if pr.state == model.PortOpen || pr.state == model.PortOpenFiltered {
 			host.Services = append(host.Services, e.service(pr))
 		}
 	}
 
-	if e.opts.Adaptive {
+	switch {
+	case e.opts.UDP:
+		// UDP-only sweep (like nmap -sU): a straight pass over the UDP candidate
+		// set, each answer classified honestly (see probeUDP). No TCP is sent, so a
+		// host proven up here is proven by a real UDP reply or ICMP unreachable —
+		// never by TCP side-effects.
+		for _, port := range e.udpCandidatePorts() {
+			record(e.probeUDP(ctx, ip, port))
+		}
+	case e.opts.Adaptive:
 		for {
 			choice, _, ok := planner.Next()
 			if !ok {
@@ -223,7 +241,7 @@ func (e *Engine) scanHost(ctx context.Context, ip string) (*model.Host, []model.
 				Outcome: string(pr.state), PostTop: string(top), PostProb: round(prob),
 			})
 		}
-	} else {
+	default:
 		for _, port := range e.candidatePorts() {
 			record(e.probe(ctx, ip, port))
 		}
@@ -260,7 +278,7 @@ func (e *Engine) candidatePorts() []int {
 // here as defense in depth even though Run already filtered — a bug that added a
 // target after filtering must still not put a packet on the wire.
 func (e *Engine) probe(ctx context.Context, ip string, port int) probeResult {
-	pr := probeResult{port: port, state: model.PortFiltered}
+	pr := probeResult{port: port, proto: "tcp", state: model.PortFiltered, source: "A3"}
 	if !e.guard.InScope(ip) || !e.budget.CanSend() {
 		return pr
 	}
@@ -288,6 +306,7 @@ func (e *Engine) probe(ctx context.Context, ip string, port int) probeResult {
 
 	pr.state = model.PortOpen
 	pr.upProof = true
+	pr.confidence = model.Confirmed
 	if e.opts.Banners {
 		pr.banner = readBanner(conn)
 	}
@@ -309,16 +328,28 @@ func readBanner(conn net.Conn) string {
 
 func (e *Engine) service(pr probeResult) model.Service {
 	svc := model.Service{
-		Port: pr.port, Proto: "tcp", State: model.PortOpen,
-		Confidence: model.Confirmed, Source: "A3",
+		Port: pr.port, Proto: pr.proto, State: pr.state,
+		Confidence: pr.confidence, Source: pr.source,
 	}
-	if name, ok := wellKnown[pr.port]; ok {
+	if name := serviceName(pr.proto, pr.port); name != "" {
 		svc.Name = model.Ptr(name)
 	}
 	if pr.banner != "" {
 		svc.Banner = model.Ptr(pr.banner)
 	}
 	return svc
+}
+
+// serviceName gives a display name for a port on a given proto. Display only; it
+// never drives a decision.
+func serviceName(proto string, port int) string {
+	if proto == "udp" {
+		if name, ok := udpWellKnown[port]; ok {
+			return name
+		}
+		return ""
+	}
+	return wellKnown[port]
 }
 
 func (e *Engine) fillStats(res *model.Result, plan *model.PlanReport) {

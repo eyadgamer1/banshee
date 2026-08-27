@@ -92,3 +92,17 @@ def test_config_engine_defaults_to_python():
     cfg = ScanConfig()
     assert cfg.engine == "python"
     assert cfg.adaptive is False
+    assert cfg.udp is False
+
+
+def test_open_filtered_is_not_counted_as_open():
+    """UDP's open|filtered must never appear in open_ports (that means confirmed-open)."""
+    h = Host(
+        ip="10.0.0.1",
+        services=[
+            Service(port=53, proto=Proto.UDP, state=PortState.OPEN_FILTERED),
+            Service(port=123, proto=Proto.UDP, state=PortState.OPEN),
+        ],
+    )
+    assert h.open_ports == [123]  # 53 is open|filtered — excluded
+    assert PortState.OPEN_FILTERED.value == "open|filtered"

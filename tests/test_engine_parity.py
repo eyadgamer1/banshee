@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json
 import socket
+import threading
 
 import pytest
 from typer.testing import CliRunner
@@ -70,6 +71,37 @@ def closed_port():
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+@contextlib.contextmanager
+def udp_socket(*, reply: bool):
+    """Bind a loopback UDP socket. reply=True echoes (provably open); reply=False
+    drains but never answers (open|filtered — open yet indistinguishable from filtered).
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    s.settimeout(0.3)
+    port = s.getsockname()[1]
+    stop = threading.Event()
+
+    def serve():
+        while not stop.is_set():
+            try:
+                data, addr = s.recvfrom(2048)
+            except (TimeoutError, OSError):
+                continue
+            if reply:
+                with contextlib.suppress(OSError):
+                    s.sendto(b"PONG", addr)
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    try:
+        yield port
+    finally:
+        stop.set()
+        t.join(timeout=1)
+        s.close()
 
 
 def scan(engine, scope_file, tmp_path, ports, binary):
@@ -174,6 +206,40 @@ def test_go_adaptive_surfaces_plan(go_binary, loopback_scope, tmp_path):
     assert plan["probes_planned"] >= plan["probes_sent"]
     assert plan["probes_saved"] == plan["probes_planned"] - plan["probes_sent"]
     assert plan["verdicts"] and plan["verdicts"][0]["class"], "no device classification"
+
+
+def test_go_udp_ground_truth(go_binary, loopback_scope, tmp_path):
+    """Real UDP through the CLI: a replying port is CONFIRMED open; a silent port is
+    open|filtered — the anti-fabrication invariant, end to end."""
+    with udp_socket(reply=True) as up_open, udp_socket(reply=False) as up_silent:
+        out = tmp_path / "udp.json"
+        result = runner.invoke(
+            app,
+            [
+                "127.0.0.1",
+                "--mode", "normal",
+                "-T", "4",
+                "--sniff-timeout", "0.5",
+                "--no-fingerprint",
+                "--engine", "go",
+                "--udp",
+                "--ports", f"{up_open},{up_silent}",
+                "--scope", loopback_scope,
+                "--silent",
+                "--json", str(out),
+            ],
+            env={"BANSHEE_ENGINE": go_binary},
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(out.read_text(encoding="utf-8"))
+
+    host = next(h for h in data["hosts"] if h["ip"] == "127.0.0.1")
+    svc = {s["port"]: s for s in host["services"]}
+    assert svc[up_open]["proto"] == "udp"
+    assert svc[up_open]["state"] == "open"
+    assert svc[up_open]["confidence"] == "confirmed"
+    assert svc[up_silent]["state"] == "open|filtered"
+    assert svc[up_silent]["confidence"] == "potential"
 
 
 def test_out_of_scope_target_is_refused(go_binary, loopback_scope, tmp_path):

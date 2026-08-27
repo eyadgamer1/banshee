@@ -41,6 +41,9 @@ const (
 	PortOpen     PortState = "open"
 	PortClosed   PortState = "closed"
 	PortFiltered PortState = "filtered"
+	// PortOpenFiltered is UDP's honest "cannot tell": a silent port may be open
+	// (service ignored our probe) or filtered. We never collapse it to "open".
+	PortOpenFiltered PortState = "open|filtered"
 )
 
 type Service struct {

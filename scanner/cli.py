@@ -315,6 +315,14 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             rich_help_panel=_ENGINE,
         ),
     ] = False,
+    udp: Annotated[
+        bool,
+        typer.Option(
+            "--udp",
+            help="Go engine: UDP scan; silent ports report open|filtered (needs --engine go)",
+            rich_help_panel=_ENGINE,
+        ),
+    ] = False,
     # --- output files ---
     out_txt: Annotated[
         str | None, typer.Option("--txt", help="write text report", rich_help_panel=_OUTPUT)
@@ -447,6 +455,18 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             "or --engine auto with the binary built)"
         )
         raise typer.Exit(code=2)
+    if udp and engine != "go":
+        console.print(
+            "[red]error:[/red] --udp needs the Go engine (pass --engine go, "
+            "or --engine auto with the binary built)"
+        )
+        raise typer.Exit(code=2)
+    if udp and adaptive:
+        console.print(
+            "[red]error:[/red] --udp and --adaptive are mutually exclusive "
+            "(the adaptive planner is TCP-only)"
+        )
+        raise typer.Exit(code=2)
 
     if out_all:
         out_txt = out_txt or f"{out_all}.txt"
@@ -479,6 +499,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         max_detect_risk=max_detect_risk,
         engine=engine,
         adaptive=adaptive,
+        udp=udp,
         fingerprint=do_fingerprint,
         names=do_names,
         classify=do_classify,

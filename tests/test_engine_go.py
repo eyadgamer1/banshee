@@ -11,7 +11,9 @@ from __future__ import annotations
 import socket
 
 import pytest
+from typer.testing import CliRunner
 
+from scanner.cli import app
 from scanner.core.models import ScanConfig, ScanMode
 from scanner.engine_go import (
     _needs_dns,
@@ -85,6 +87,11 @@ def test_build_args_dry_run_forces_zero_risk():
     assert args[i + 1] == "0"  # dry-run wins over any max-detect-risk value
 
 
+def test_build_args_udp():
+    cfg = ScanConfig(targets=["127.0.0.1"], mode=ScanMode.NORMAL, udp=True)
+    assert "-udp" in build_args(cfg, "scope.yaml", ["127.0.0.1"])
+
+
 def test_resolve_engine_auto_picks_go_when_built(monkeypatch):
     monkeypatch.setattr("scanner.engine_go.find_engine", lambda: "/x/banshee-engine")
     assert resolve_engine("auto") == "go"
@@ -99,6 +106,28 @@ def test_resolve_engine_auto_falls_back_to_python(monkeypatch):
     # explicit choices always pass through unchanged
     assert resolve_engine("python") == "python"
     assert resolve_engine("go") == "go"
+
+
+_runner = CliRunner()
+
+
+def test_udp_without_go_engine_is_rejected():
+    # --udp defaults to the python engine, which cannot do UDP: fail loudly, exit 2.
+    result = _runner.invoke(app, ["127.0.0.1", "--udp"])
+    assert result.exit_code == 2
+    assert "--udp needs the Go engine" in result.output
+
+
+def test_udp_and_adaptive_are_mutually_exclusive():
+    result = _runner.invoke(app, ["127.0.0.1", "--engine", "go", "--udp", "--adaptive"])
+    assert result.exit_code == 2
+    assert "mutually exclusive" in result.output
+
+
+def test_unknown_engine_is_rejected():
+    result = _runner.invoke(app, ["127.0.0.1", "--engine", "rust"])
+    assert result.exit_code == 2
+    assert "unknown --engine" in result.output
 
 
 def test_find_engine_rejects_bad_env(monkeypatch, tmp_path):

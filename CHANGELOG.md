@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.2.0] — 2026-08-25
+
+UDP scanning — done honestly.
+
+### Added
+
+- **`--udp`** (Go engine): a UDP scan of the candidate ports (a UDP default set
+  when `-p` is omitted). UDP is connectionless, so the engine reports exactly what
+  it can prove and nothing more:
+  - a reply from the port → **open** (CONFIRMED; the host is provably up),
+  - an ICMP port-unreachable (delivered as a refused/reset on a connected UDP
+    socket) → **closed** (CONFIRMED; the host is up),
+  - silence → **open\|filtered** (POTENTIAL) — a silent port may be open (the
+    service ignored the probe) or filtered, and is **never** collapsed to a plain
+    "open". A silent port is excluded from `open_ports`, and silence alone never
+    invents a host.
+
+  Protocol-correct probe payloads (DNS, NTP, SNMP, SSDP, mDNS) make an open
+  service answer, so silence is meaningful. `--udp` is UDP-only (like `nmap -sU`)
+  and mutually exclusive with `--adaptive` (the planner is TCP).
+- **Ground-truth UDP tests** in both engines: bind real UDP responders, silent
+  sockets, and closed ports on loopback and assert the three-state classification —
+  including that a silent port is reported open\|filtered and never open.
+
+### Changed
+
+- `PortState` gains `open|filtered`; JSON/XML/text reports carry it verbatim.
+
 ## [1.1.0] — 2026-08-24
 
 One tool, two engines. The Go active-scan core and the Python tool are now a

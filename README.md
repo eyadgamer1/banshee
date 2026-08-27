@@ -156,10 +156,23 @@ git clone https://github.com/eyadgamer1/banshee && cd banshee
 uv sync
 uv run banshee --help
 
-# Go engine (single static binary — optional, for fast active sweeps)
+# Go engine (single static binary — optional, for fast active sweeps + UDP)
 cd engine
 go build -o banshee-engine ./cmd/banshee-engine
 ./banshee-engine -h
+```
+
+**Prebuilt Go engine — no toolchain needed.** Every tagged release ships static
+`banshee-engine` binaries for Linux (amd64/arm64), Windows, and macOS
+(Intel/Apple Silicon) on the [Releases](https://github.com/eyadgamer1/banshee/releases)
+page. Download the one for your platform, mark it executable, and either put it on
+your `PATH` or point `BANSHEE_ENGINE` at it — then `--engine go` and `--engine auto`
+just work:
+
+```bash
+chmod +x banshee-engine-linux-amd64
+export BANSHEE_ENGINE="$PWD/banshee-engine-linux-amd64"
+banshee 192.168.1.0/24 --engine go --mode normal
 ```
 
 ---
@@ -258,6 +271,7 @@ BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; 
 |---|---|
 | `--engine [python\|go\|auto]` | Active-scan core (default **`python`**). `go` delegates discovery/probing to the fast, low-memory static binary; `auto` uses `go` when the binary is present, else `python`. Passive capture, analysis and reporting stay Python either way |
 | `--adaptive` | Go only: pick probes by information-gain per unit of detection risk and stop early once a device class is confident. The report and JSON then include a `plan` block — probes saved, detection risk spent, and per-host device classification (requires `--engine go`/`auto`) |
+| `--udp` | Go only: UDP scan (like `nmap -sU`). A replying port is **open**, an ICMP-unreachable is **closed**, and a **silent** port is honestly **`open\|filtered`** — never a fake "open" (requires `--engine go`/`auto`; mutually exclusive with `--adaptive`) |
 
 > `--engine go` needs the binary built (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`) and found via `$BANSHEE_ENGINE`, your `PATH`, or the repo's `engine/` directory. See [The Go engine](#the-go-engine).
 
@@ -369,6 +383,35 @@ Cross-compile for a drop-box:
 GOOS=linux GOARCH=arm64 go build -o banshee-engine-arm64 ./cmd/banshee-engine
 ```
 
+### UDP — honest by design
+
+UDP is connectionless, so most scanners either lie (call everything "open") or
+guess. BANSHEE reports **only what it can prove**:
+
+| Observation | Reported state | Confidence |
+|---|---|---|
+| The port sends a reply | `open` | **CONFIRMED** — the host is provably up |
+| ICMP port-unreachable (refused/reset) | `closed` | **CONFIRMED** — the host is up |
+| Silence | `open\|filtered` | **POTENTIAL** — open *or* filtered; we can't tell |
+
+A silent port is **never** collapsed to a plain "open", is excluded from
+`open_ports`, and silence alone never invents a host. Protocol-correct payloads
+(DNS, NTP, SNMP, SSDP, mDNS) make an open service answer, so silence is meaningful.
+
+```bash
+# UDP scan of the common UDP services on a host (unified CLI drives the Go engine)
+banshee 192.168.1.10 --engine go --udp
+
+# UDP scan of specific ports, JSON out
+banshee 192.168.1.10 --engine go --udp -p 53,123,161,500,1900 --json udp.json
+
+# or the standalone binary
+./banshee-engine -scope ../config/scope.yaml -udp -ports 53,161 192.168.1.10
+```
+
+`--udp` is UDP-only (like `nmap -sU`) and cannot be combined with `--adaptive`
+(the adaptive planner models TCP detection risk).
+
 ---
 
 ## Scope & authorization
@@ -415,7 +458,12 @@ uv run pytest tests/test_ground_truth.py -v
 10 passed
 ```
 
-The full suite (261 tests — including cross-engine parity that drives **both** the Python and Go engines against real loopback listeners and asserts they agree port-for-port) plus the Go engine's own ground-truth tests (`cd engine && go test ./...`) run on every push via CI on Linux and Windows.
+The full suite (277 tests) proves the hard cases against reality on loopback:
+cross-engine **parity** (Python and Go agree port-for-port), and **UDP ground
+truth** — a replying UDP port is reported `open`, a silent one is `open|filtered`
+and *never* a fake "open". The Go engine carries its own ground-truth tests
+(`cd engine && go test ./...`). Everything runs on every push via CI on Linux and
+Windows — including the Go build, so the parity and UDP tests execute, not skip.
 
 ---
 
@@ -440,11 +488,17 @@ All six file formats can be written at once with `-A BASE`. A JSONL audit trail 
 | Symptom | Cause & fix |
 |---|---|
 | `scope file not found` | You passed `--scope` with a path that doesn't exist. Without `--scope`, a built-in default is used automatically. |
-| Everything reports out-of-scope | Your target isn't in `allowlist`. Add it to your scope file (see [Scope](#scope--authorization)). |
+| Everything reports out-of-scope | Your target isn't in `allowlist`. Add it to your scope file (see [Scope](#scope--authorization)). Exit code **3**. |
+| `banshee-engine binary not found` | `--engine go` can't find the engine. Build it (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`), download a [release binary](https://github.com/eyadgamer1/banshee/releases), set `BANSHEE_ENGINE=/path/to/banshee-engine`, or use `--engine auto` to fall back to Python. |
+| `--udp needs the Go engine` | `--udp` (and `--adaptive`) run only on the Go engine. Add `--engine go` (or `--engine auto` with the binary present). |
+| `--udp and --adaptive are mutually exclusive` | Pick one: UDP scan **or** the TCP adaptive planner. |
+| UDP scan shows lots of `open\|filtered` | Working as intended — that's an honest "can't tell open from filtered", not a bug. A firewall dropping UDP looks identical to a silent open service; only a reply proves `open`. |
 | Passive sniff finds nothing on Windows | Install [Npcap](https://npcap.com) in WinPcap-compatible mode. Passive capture needs a packet driver. |
-| `Operation not permitted` on `-i` / passive | Raw sockets need privileges — run with `sudo` (Linux/macOS) or as Administrator (Windows). The active TCP sweep does not. |
+| `Operation not permitted` on `-i` / passive | Raw sockets need privileges — run with `sudo` (Linux/macOS) or as Administrator (Windows). The active TCP/UDP sweep does not. |
 | Garbled banner on an old terminal | Harmless — BANSHEE auto-falls back to an ASCII banner when the console can't render block glyphs. |
 | `--agentic` does nothing | It needs a local [Ollama](https://ollama.com) server with a pulled model. |
+
+**Exit codes:** `0` success · `1` engine/runtime error · `2` bad usage (unknown flag/value, no targets, bad `--ports`) · `3` scope violation (every target out of scope).
 
 ---
 

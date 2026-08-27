@@ -42,8 +42,10 @@ TASKS.md
 Thumbs.db
 .DS_Store
 
-# Go engine build artifacts (single static binary; built from engine/)
+# Go engine build artifacts (single static binary; built from engine/).
+# Anchor the extension-less binary so a bare "banshee-engine" pattern does not
+# also ignore the engine/cmd/banshee-engine/ source directory.
 banshee-engine.exe
-banshee-engine
+/banshee-engine
 engine/banshee-engine
 engine/banshee-engine.exe

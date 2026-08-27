@@ -177,6 +177,8 @@ def build_args(cfg: ScanConfig, scope_path: str, targets: list[str]) -> list[str
         args += ["-timeout", str(cfg.timeout_ms)]
     if cfg.adaptive:
         args.append("-adaptive")
+    if cfg.udp:
+        args.append("-udp")
     if not cfg.fingerprint:
         args.append("-banners=false")
 

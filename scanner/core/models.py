@@ -63,6 +63,9 @@ class PortState(StrEnum):
     OPEN = "open"
     CLOSED = "closed"
     FILTERED = "filtered"
+    # UDP's honest "cannot tell": a silent port may be open (the service ignored
+    # our probe) or filtered. Never collapsed to OPEN, and excluded from open_ports.
+    OPEN_FILTERED = "open|filtered"
 
 
 class Proto(StrEnum):
@@ -173,6 +176,9 @@ class ScanConfig(BaseModel):
     # adaptive information-gain probe planner — Go engine only, for now. Selects
     # probes by bits-per-unit-risk and stops early once a device class is confident.
     adaptive: bool = False
+    # UDP scan (Go engine only): probe ports over UDP. A silent port is reported
+    # open|filtered — never plain open. Mutually exclusive with adaptive (which is TCP).
+    udp: bool = False
 
     # port selection — None inherits the discoverer's default probe set
     ports: list[int] | None = None
