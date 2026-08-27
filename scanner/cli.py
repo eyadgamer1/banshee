@@ -12,7 +12,9 @@ ScanEngine (A1), runs it, applies the confidence policy (C7), and emits output.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
+import re
 import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -35,6 +37,50 @@ from scanner.plugins import run_plugins
 from scanner.report.diff import compute_diff, render_diff
 from scanner.store import RogueDetector, ScanStore
 from scanner.ui import print_banner
+
+# Only digits and IP/CIDR/range punctuation — a token that looks like an address.
+_NETWORKISH = re.compile(r"^[0-9./:\-]+$")
+# A plausible DNS hostname: valid label chars, and at least one alphanumeric so a
+# string of punctuation ("@@@", "...") is not mistaken for a name.
+_HOSTNAME = re.compile(r"^(?=.*[A-Za-z0-9])[A-Za-z0-9._-]+$")
+
+
+def _target_is_valid(token: str) -> bool:
+    """True if a target token is usable: a valid IP (v4/v6), CIDR, last-octet or
+    full range, or a plausible hostname. A token that looks like an address (only
+    digits and network punctuation) but does not parse — ``999.999.999.999``,
+    ``10.0.0.0/99``, ``10.0.0.5-999`` — and junk like ``@@@`` are rejected here,
+    so a typo fails fast with a clear message instead of silently resolving to
+    nothing. A well-formed but unresolvable hostname still passes; the resolver
+    decides, and the run reports that no host responded."""
+    token = token.strip()
+    if not token:
+        return False
+    try:
+        ipaddress.ip_address(token)
+        return True
+    except ValueError:
+        pass
+    if "/" in token:  # CIDR (v4 or v6)
+        try:
+            ipaddress.ip_network(token, strict=False)
+            return True
+        except ValueError:
+            return False
+    if _NETWORKISH.match(token):  # address-shaped: must be a valid range, else bad
+        if "-" in token:
+            left, right = token.rsplit("-", 1)
+            try:
+                ipaddress.ip_address(left)
+                if "." in right or ":" in right:
+                    ipaddress.ip_address(right)
+                else:
+                    ipaddress.ip_address(f"{left.rsplit('.', 1)[0]}.{right}")
+                return True
+            except ValueError:
+                return False
+        return False
+    return bool(_HOSTNAME.match(token))
 
 
 def parse_ports(spec: str) -> list[int]:
@@ -289,24 +335,28 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         ),
     ] = 3,
     rate: Annotated[
-        int | None, typer.Option("--rate", help="max packets/sec", rich_help_panel=_INTENS)
+        int | None,
+        typer.Option("--rate", min=0, help="max packets/sec (0 = template default)",
+                     rich_help_panel=_INTENS),
     ] = None,
     timeout: Annotated[
         int | None,
-        typer.Option("--timeout", help="probe timeout ms (default from -T)",
+        typer.Option("--timeout", min=1, help="probe timeout ms (default from -T)",
                      rich_help_panel=_INTENS),
     ] = None,
     retries: Annotated[
         int | None,
-        typer.Option("--retries", help="probe retries (default from -T)",
+        typer.Option("--retries", min=0, help="probe retries (default from -T)",
                      rich_help_panel=_INTENS),
     ] = None,
     threads: Annotated[
-        int | None, typer.Option("--threads", help="max concurrency", rich_help_panel=_INTENS)
+        int | None,
+        typer.Option("--threads", min=1, help="max concurrency", rich_help_panel=_INTENS),
     ] = None,
     max_detect_risk: Annotated[
         int | None,
-        typer.Option("--max-detect-risk", help="0=passive..9=full", rich_help_panel=_INTENS),
+        typer.Option("--max-detect-risk", min=0, max=10, help="0=passive..10=full",
+                     rich_help_panel=_INTENS),
     ] = None,
     # --- engine ---
     engine: Annotated[
@@ -520,6 +570,20 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             console.print(f"[red]error:[/red] bad --ports value {ports!r}: {exc}")
             raise typer.Exit(code=2) from None
 
+    malformed = [t for t in targets if not _target_is_valid(t)]
+    if malformed:
+        console.print(
+            f"[yellow]warning:[/yellow] ignoring malformed target(s): {', '.join(malformed)}"
+        )
+    targets = [t for t in targets if _target_is_valid(t)]
+    if not targets:
+        console.print("[red]error:[/red] no valid targets (expected IP, CIDR, range, or hostname)")
+        raise typer.Exit(code=2)
+
+    if pcap and not Path(pcap).exists():
+        console.print(f"[red]error:[/red] pcap file not found: {pcap}")
+        raise typer.Exit(code=2)
+
     cfg = ScanConfig(
         targets=targets,
         iface=iface,
@@ -568,6 +632,9 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     except FileNotFoundError:
         console.print(f"[red]error:[/red] scope file not found: {cfg.scope_file}")
         raise typer.Exit(code=2) from None
+    except Exception as exc:  # malformed YAML, bad schema, unreadable file, ...
+        console.print(f"[red]error:[/red] could not load scope file {cfg.scope_file!r}: {exc}")
+        raise typer.Exit(code=2) from exc
 
     if not silent and not quiet:
         console.print(f"[bold yellow][!] {guard.banner}[/bold yellow]")
@@ -599,6 +666,11 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
 
     if not silent:
         report.render_result(console, result, quiet=quiet)
+        if not dry_run and not result.hosts:
+            console.print(
+                "[dim]no hosts responded — they may be down, filtered, "
+                "or a hostname did not resolve[/dim]"
+            )
 
     writers = report.get_writers()
     targets_map = {
@@ -611,7 +683,11 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     }
     for fmt, path in targets_map.items():
         if path and fmt in writers:
-            writers[fmt].write(result, Path(path))
+            try:
+                writers[fmt].write(result, Path(path))
+            except OSError as exc:
+                console.print(f"[red]error:[/red] could not write {fmt} report to {path}: {exc}")
+                raise typer.Exit(code=1) from exc
             if not silent:
                 console.print(f"[green]wrote[/green] {fmt} -> {path}")
         elif path:
@@ -656,7 +732,11 @@ def diff(
 
     delta = compute_diff(old_result, new_result)
     if out_json:
-        Path(out_json).write_text(delta.model_dump_json(indent=2), encoding="utf-8")
+        try:
+            Path(out_json).write_text(delta.model_dump_json(indent=2), encoding="utf-8")
+        except OSError as exc:
+            console.print(f"[red]error:[/red] could not write diff to {out_json}: {exc}")
+            raise typer.Exit(code=1) from exc
         console.print(f"[green]wrote[/green] diff -> {out_json}")
     render_diff(delta, console)
 

@@ -34,39 +34,66 @@ if TYPE_CHECKING:
     from scanner.report.dashboard import ProgressHook
 
 
-def _header_panel(cfg: ScanConfig) -> Panel:
-    mode = cfg.mode.value
-    timing = cfg.timing
-    iface = cfg.iface or "default"
-    content = Text(f"mode={mode}  -T{timing}  iface={iface}", justify="center")
-    title = "[bold red]BANSHEE[/bold red] [dim]live scan[/dim]"
-    return Panel(content, title=title, border_style="red")
+# ASCII-only spinner and colours — no block/braille glyphs, so the dashboard
+# renders on a legacy cp1252 console without a UnicodeEncodeError.
+_SPINNER = "|/-\\"
+_STATUS_STYLE = {
+    "discovering": "dim cyan",
+    "up": "cyan",
+    "fingerprinting": "yellow",
+    "done": "bold green",
+}
+
+
+def _header_panel(cfg: ScanConfig, frame: str, elapsed: str) -> Panel:
+    body = Text(justify="center")
+    body.append(f"{frame} scanning", "bold red")
+    body.append("    ")
+    body.append(
+        f"mode={cfg.mode.value}  -T{cfg.timing}  engine={cfg.engine}  "
+        f"iface={cfg.iface or 'default'}  elapsed={elapsed}",
+        "dim",
+    )
+    return Panel(
+        body,
+        title="[bold red]BANSHEE[/bold red] [dim]. live scan[/dim]",
+        subtitle="[dim italic]she sees everything you left exposed[/dim italic]",
+        border_style="red",
+    )
 
 
 def _host_table(hosts: dict[str, dict[str, object]]) -> Table:
-    table = Table(box=SIMPLE_HEAVY, expand=True, show_header=True)
-    for col in ("IP", "Name", "OS", "Ports", "Findings", "Status"):
-        table.add_column(col, overflow="fold")
+    table = Table(box=SIMPLE_HEAVY, expand=True, show_header=True, header_style="bold")
+    table.add_column("IP", style="bold cyan", no_wrap=True)
+    table.add_column("Name", overflow="fold")
+    table.add_column("OS")
+    table.add_column("Ports", style="green")
+    table.add_column("Findings", justify="right")
+    table.add_column("Status", no_wrap=True)
     for ip, h in sorted(hosts.items()):
-        ports = str(h.get("ports", ""))
-        findings = str(h.get("findings", 0))
         status = str(h.get("status", "discovering"))
-        style = "green" if status == "done" else "yellow"
+        style = _STATUS_STYLE.get(status, "white")
+        fnd = int(str(h.get("findings", 0) or 0))
+        fnd_txt = f"[red]{fnd}[/red]" if fnd else "[dim]0[/dim]"
         table.add_row(
-            ip, str(h.get("name", "")), str(h.get("os", "")), ports, findings,
-            f"[{style}]{status}[/]",
+            ip, str(h.get("name", "")), str(h.get("os", "")),
+            str(h.get("ports", "")), fnd_txt, f"[{style}]{status}[/]",
         )
     return table
 
 
-def _stats_bar(stats: dict[str, object]) -> Text:
-    return Text(
-        f"hosts up: {stats.get('up', 0)}  "
-        f"services: {stats.get('services', 0)}  "
-        f"findings: {stats.get('findings', 0)}  "
-        f"elapsed: {stats.get('elapsed', '0s')}",
-        justify="center",
-    )
+def _stats_bar(stats: dict[str, object], frame: str) -> Text:
+    bar = Text(justify="center")
+    bar.append(f"{frame} ", "red")
+    bar.append("hosts up ", "dim")
+    bar.append(f"{stats.get('up', 0)}    ", "bold cyan")
+    bar.append("services ", "dim")
+    bar.append(f"{stats.get('services', 0)}    ", "bold green")
+    bar.append("findings ", "dim")
+    bar.append(f"{stats.get('findings', 0)}    ", "bold red")
+    bar.append("elapsed ", "dim")
+    bar.append(str(stats.get("elapsed", "0s")), "bold")
+    return bar
 
 
 @contextlib.contextmanager
@@ -94,13 +121,15 @@ def live_dashboard(
         Layout(name="hosts"),
         Layout(name="stats", size=3),
     )
-    layout["header"].update(_header_panel(cfg))
-
     def _refresh() -> None:
         elapsed = f"{time.time() - t_start:.0f}s"
         stats["elapsed"] = elapsed
-        layout["hosts"].update(Panel(_host_table(hosts), title="Hosts", border_style="dim"))
-        layout["stats"].update(Panel(_stats_bar(stats), border_style="dim"))
+        frame = _SPINNER[int((time.time() - t_start) * 8) % len(_SPINNER)]
+        layout["header"].update(_header_panel(cfg, frame, elapsed))
+        layout["hosts"].update(
+            Panel(_host_table(hosts), title=f"Hosts ({len(hosts)})", border_style="cyan")
+        )
+        layout["stats"].update(Panel(_stats_bar(stats, frame), border_style="dim"))
 
     def hook(event: str, fields: dict[str, object]) -> None:
         ip = str(fields.get("ip", ""))

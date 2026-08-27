@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.6.0] — 2026-08-28
+
+Hardened error handling, a cleaner live dashboard, and a simpler install/update story.
+
+### Added
+
+- **Comprehensive input validation.** Every bad input now fails fast with a
+  one-line message and the documented exit code — never a traceback:
+  - malformed targets (`999.999.999.999`, `10.0.0.0/99`, `10.0.0.5-999`, `@@@`)
+    are rejected; a bad target mixed with good ones is skipped with a warning;
+  - out-of-range options are bounded (`--max-detect-risk 0..10`, `--rate >= 0`,
+    `--threads >= 1`, `--timeout >= 1`, `--retries >= 0`);
+  - a missing `--pcap` file is reported instead of silently scanning nothing;
+  - a well-formed but unresolvable hostname reports "no host responded".
+- **Error/edge-case test suite** (`tests/test_errors.py`) driving the real CLI
+  across malformed targets, out-of-range options, bad files, and unwritable
+  output.
+
+### Changed
+
+- **Cleaner live dashboard**: an animated scanning spinner, colour-coded host
+  status (discovering / up / fingerprinting / done), a running host count, and a
+  colourised stats bar. All glyphs are ASCII, so it renders on a legacy Windows
+  console without a `UnicodeEncodeError`.
+
+### Fixed
+
+- **Three crashes that printed a Python traceback are now clean errors:** a
+  malformed or unreadable scope file (exit 2), a report path that can't be
+  written such as a directory (exit 1), and a `$BANSHEE_ENGINE` that points at a
+  non-runnable file — wrong platform or not executable (exit 1).
+
 ## [1.5.0] — 2026-08-27
 
 Deception/honeypot signals — `--deception`.

@@ -216,12 +216,20 @@ async def run_go_engine(cfg: ScanConfig, guard: ScopeGuard, scope_path: str) -> 
     args = build_args(cfg, scope_path, resolved)
     log.debug("go engine: %s %s", binary, " ".join(args))
 
-    proc = await asyncio.create_subprocess_exec(
-        binary,
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            binary,
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as exc:
+        # binary exists but is not runnable: wrong platform, not executable, or a
+        # non-binary file pointed at by $BANSHEE_ENGINE.
+        raise RuntimeError(
+            f"could not run banshee-engine at {binary!r} ({exc}); check it is the right "
+            "platform build and is executable"
+        ) from exc
     stdout, stderr = await proc.communicate()
     err_text = stderr.decode("utf-8", "replace").strip()
 

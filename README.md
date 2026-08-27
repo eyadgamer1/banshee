@@ -73,6 +73,18 @@ It is built for ethical hackers and defenders who care about two things most sca
 
 ## Install
 
+**TL;DR — one line, any OS** (needs [`uv`](https://github.com/astral-sh/uv); [install uv](https://github.com/astral-sh/uv#installation) first if you don't have it):
+
+```bash
+uv tool install git+https://github.com/eyadgamer1/banshee
+banshee --help
+```
+
+That's the whole install — a single self-contained `banshee` command with a
+built-in default scope. No clone, no config, no Go toolchain (the fast Go engine
+is optional; see [below](#from-source--go-engine)). Per-OS details and `pipx`/`pip`
+alternatives follow.
+
 > **Requirements:** Python **3.12+**. The active TCP-connect sweep needs **no privileges**. Passive sniffing and ICMP discovery use raw sockets, which need **`sudo`** on Linux/macOS or **[Npcap](https://npcap.com)** on Windows.
 
 The fastest path on every OS is [`uv`](https://github.com/astral-sh/uv). `pipx` (isolated) and `pip` also work.
@@ -177,6 +189,27 @@ export BANSHEE_ENGINE="$PWD/banshee-engine-linux-amd64"
 banshee 192.168.1.0/24 --engine go --mode normal
 ```
 
+### Updating to the latest version
+
+Run the command that matches how you installed it:
+
+```bash
+uv tool upgrade banshee                                   # if installed with uv (recommended)
+pipx upgrade banshee                                      # if installed with pipx
+pip install --upgrade git+https://github.com/eyadgamer1/banshee   # if installed with pip
+```
+
+`uv tool upgrade banshee` re-pulls the latest `main`. If a release ever pins an
+old version, force a clean reinstall:
+
+```bash
+uv tool install --reinstall git+https://github.com/eyadgamer1/banshee
+```
+
+Check what you're on with `banshee --version`. Updating the Go engine binary is
+separate: re-download it from [Releases](https://github.com/eyadgamer1/banshee/releases)
+or rebuild with `git pull && cd engine && go build -o banshee-engine ./cmd/banshee-engine`.
+
 ---
 
 ## Quick start
@@ -267,7 +300,7 @@ BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; 
 | `--timeout INTEGER` | Probe timeout ms (default from `-T`) |
 | `--retries INTEGER` | Probe retries (default from `-T`) |
 | `--threads INTEGER` | Max concurrency |
-| `--max-detect-risk 0..9` | Hard ceiling on noise. `0` forces passive; `9` is full-intensity |
+| `--max-detect-risk 0..10` | Hard ceiling on noise. `0` forces passive; `10` is full-intensity. Out-of-range values are rejected |
 
 ### Engine — *who does the active probing*
 
@@ -494,7 +527,7 @@ uv run pytest tests/test_ground_truth.py -v
 10 passed
 ```
 
-The full suite (287 tests) proves the hard cases against reality on loopback:
+The full suite (304 tests) proves the hard cases against reality on loopback:
 cross-engine **parity** (Python and Go agree port-for-port), **UDP ground
 truth** — a replying UDP port is reported `open`, a silent one is `open|filtered`
 and *never* a fake "open" — and **service-version honesty**, that `-sV` extracts a
@@ -584,7 +617,9 @@ alone, so an ordinary web+SSH server is left untouched.
 | Garbled banner on an old terminal | Harmless — BANSHEE auto-falls back to an ASCII banner when the console can't render block glyphs. |
 | `--agentic` does nothing | It needs a local [Ollama](https://ollama.com) server with a pulled model. |
 
-**Exit codes:** `0` success · `1` engine/runtime error · `2` bad usage (unknown flag/value, no targets, bad `--ports`) · `3` scope violation (every target out of scope).
+**Exit codes:** `0` success · `1` engine/runtime error (e.g. a report path that can't be written, or the Go engine failing to run) · `2` bad usage (unknown flag/value, no valid targets, malformed target, bad `--ports`, out-of-range option, missing `--pcap`, unreadable/invalid scope file) · `3` scope violation (every target out of scope).
+
+Every bad input fails fast with a one-line message and one of these codes — never a Python traceback. A malformed target mixed with good ones is skipped with a warning; a well-formed but unresolvable hostname simply reports that no host responded.
 
 ---
 
