@@ -94,15 +94,18 @@ The fastest path on every OS is [`uv`](https://github.com/astral-sh/uv). `pipx` 
 ```bash
 # 1. Install uv (one line, no root needed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
-exec $SHELL                       # reload PATH
+export PATH="$HOME/.local/bin:$PATH"   # put uv on PATH now — do NOT run `exec $SHELL` here; it replaces the shell and aborts the rest of this block
 
 # 2. Install BANSHEE as a global tool
 uv tool install git+https://github.com/eyadgamer1/banshee
+uv tool update-shell                    # keep `banshee` on PATH in future terminals
 
 # 3. Verify
 banshee --version
 banshee --help
 ```
+
+> **`banshee: command not found` right after install?** The `banshee` binary is in `~/.local/bin`, which isn't on your `PATH` yet in this shell. Run `uv tool update-shell` then open a new terminal — or, just for the current shell, `export PATH="$HOME/.local/bin:$PATH"`.
 
 <details>
 <summary>Prefer <code>pipx</code>, or one-line installer?</summary>
