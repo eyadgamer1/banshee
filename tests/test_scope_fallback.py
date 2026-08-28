@@ -12,22 +12,25 @@ from pathlib import Path
 
 import yaml
 from rich.console import Console
+from typer.testing import CliRunner
 
-from scanner.cli import _DEFAULT_SCOPE_FILE, _resolve_scope_file
+from scanner.cli import _DEFAULT_SCOPE_FILE, _resolve_scope_file, app
 from scanner.core.scope import ScopeGuard
 
 _QUIET_CONSOLE = Console(quiet=True)
 
 
-def test_packaged_default_scope_is_shipped_and_valid() -> None:
+def test_packaged_default_scope_is_shipped_and_open() -> None:
     packaged = files("scanner").joinpath("data", "default_scope.yaml")
     assert packaged.is_file(), "default scope not packaged inside scanner/"
     data = yaml.safe_load(packaged.read_text(encoding="utf-8"))
     assert data["allowlist"], "packaged scope must have a non-empty allowlist"
-    # It must actually load through the real guard and enforce RFC1918 scope.
+    # The default is open (nmap-style): every target loads through the real guard
+    # and is admitted — private and public, IPv4 and IPv6.
     guard = ScopeGuard.from_file(str(packaged))
     assert guard.is_in_scope("192.168.1.10")
-    assert not guard.is_in_scope("8.8.8.8")
+    assert guard.is_in_scope("8.8.8.8")
+    assert guard.is_in_scope("2001:4860:4860::8888")
 
 
 def test_missing_default_scope_falls_back_to_packaged(tmp_path: Path, monkeypatch) -> None:
@@ -41,3 +44,12 @@ def test_explicit_missing_scope_is_not_silently_replaced(tmp_path: Path) -> None
     explicit = str(tmp_path / "my-engagement.yaml")  # user asked for this exact file
     resolved = _resolve_scope_file(explicit, _QUIET_CONSOLE, quiet=True)
     assert resolved == explicit  # left as-is, so the CLI fails loudly with their path
+
+
+def test_open_default_admits_a_public_target_at_the_cli() -> None:
+    # End-to-end proof the open default reaches the CLI: a public IP plans without
+    # a scope violation. --dry-run sends zero packets, so nothing is actually
+    # scanned; this only checks the guard now admits an out-of-RFC1918 target.
+    r = CliRunner().invoke(app, ["8.8.8.8", "--dry-run", "--silent"])
+    assert r.exit_code == 0, r.output
+    assert "scope violation" not in r.output.lower()

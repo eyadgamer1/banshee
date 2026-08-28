@@ -228,7 +228,7 @@ banshee 192.168.1.10 --mode normal
 banshee 192.168.1.0/24 --mode normal --classify --ssvc --html report.html
 ```
 
-By default BANSHEE only scans **loopback and RFC1918 (private) ranges**. Public addresses are refused until you add them to your scope file — see [Scope & authorization](#scope--authorization).
+By default BANSHEE scans **any target you give it, like `nmap`** — the authorization responsibility is yours. To restrict it to a lab or engagement range, pass a scope allowlist with `--scope` — see [Scope & authorization](#scope--authorization).
 
 ---
 
@@ -248,7 +248,7 @@ BANSHEE renders a live dashboard while it works, then prints a clean summary. Be
 │   Broad-Area Network Scanner for Host Enumeration and Exposure  |  v1.2.0   │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-[!] AUTHORIZED TARGETS ONLY - loopback + RFC1918 default scope
+[!] AUTHORIZED TARGETS ONLY - open scope (any target); you are responsible for authorization
 mode=normal -T4 engine=python fingerprint=True
 
 hosts up 1  services 2  findings 0  in-scope 1  out-of-scope 0  packets 6
@@ -488,29 +488,36 @@ Both versions came straight from the bytes those services returned. `-sV` needs
 
 ## Scope & authorization
 
-**BANSHEE refuses to touch anything outside its scope. There is no override flag.** This is the single most important safety property, and it is enforced, not advised.
+**BANSHEE is open by default — like `nmap`, it will scan any target you give it. The authorization responsibility is entirely yours.** Only scan networks you own or are explicitly authorized to test. Unauthorized scanning is illegal in most jurisdictions.
 
-The default scope (`config/scope.yaml`, or a built-in copy when that file is absent) allows only loopback and private ranges:
+The default scope (`config/scope.yaml`, or a built-in copy when that file is absent) admits every IPv4 and IPv6 target:
 
 ```yaml
-banner: "AUTHORIZED TARGETS ONLY"
+banner: "AUTHORIZED TARGETS ONLY - open scope (any target); you are responsible for authorization"
 allowlist:
-  - 127.0.0.1/8
-  - 10.0.0.0/8
-  - 172.16.0.0/12
-  - 192.168.0.0/16
+  - 0.0.0.0/0
+  - "::/0"
 denylist: []
-max_hosts_per_scan: 1024
-max_ports_per_host: 1000
+max_hosts_per_scan: 1048576
+max_ports_per_host: 65535
 ```
 
-To assess a target you own, add it to `allowlist` and point BANSHEE at your file:
+**Put the safety rail back with a scope file.** The scope engine is fully intact — it still enforces whatever allowlist/denylist you give it. To lock BANSHEE to a lab or engagement range, write your own allowlist and pass it with `--scope`:
+
+```yaml
+# my-engagement.yaml — only these ranges may be scanned
+allowlist:
+  - 10.0.0.0/8
+  - 203.0.113.0/24
+denylist:
+  - 10.9.9.0/24        # deny wins over allow
+```
 
 ```bash
-banshee 203.0.113.0/24 --scope my-engagement.yaml
+banshee 203.0.113.5 --scope my-engagement.yaml
 ```
 
-Anything not on the list is refused with a non-zero exit code. A single target larger than `max_hosts_per_scan` is refused outright rather than silently truncated. **Only scan networks you own or are explicitly authorized to test.**
+With a restrictive scope, anything not on the list is refused with **exit code 3**, and a target larger than `max_hosts_per_scan` is refused outright rather than silently truncated. Use a denylist to carve out hosts you must never touch even inside an allowed range.
 
 ---
 
@@ -530,7 +537,7 @@ uv run pytest tests/test_ground_truth.py -v
 10 passed
 ```
 
-The full suite (304 tests) proves the hard cases against reality on loopback:
+The full suite (305 tests) proves the hard cases against reality on loopback:
 cross-engine **parity** (Python and Go agree port-for-port), **UDP ground
 truth** — a replying UDP port is reported `open`, a silent one is `open|filtered`
 and *never* a fake "open" — and **service-version honesty**, that `-sV` extracts a
@@ -610,7 +617,7 @@ alone, so an ordinary web+SSH server is left untouched.
 | Symptom | Cause & fix |
 |---|---|
 | `scope file not found` | You passed `--scope` with a path that doesn't exist. Without `--scope`, a built-in default is used automatically. |
-| Everything reports out-of-scope | Your target isn't in `allowlist`. Add it to your scope file (see [Scope](#scope--authorization)). Exit code **3**. |
+| Everything reports out-of-scope | Only happens when you passed a restrictive `--scope`: your target isn't in that file's `allowlist`. Add it, or drop `--scope` to use the open default (see [Scope](#scope--authorization)). Exit code **3**. |
 | `banshee-engine binary not found` | `--engine go` can't find the engine. Build it (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`), download a [release binary](https://github.com/eyadgamer1/banshee/releases), set `BANSHEE_ENGINE=/path/to/banshee-engine`, or use `--engine auto` to fall back to Python. |
 | `--udp needs the Go engine` | `--udp` (and `--adaptive`) run only on the Go engine. Add `--engine go` (or `--engine auto` with the binary present). |
 | `--udp and --adaptive are mutually exclusive` | Pick one: UDP scan **or** the TCP adaptive planner. |

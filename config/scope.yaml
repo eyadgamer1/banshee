@@ -1,13 +1,18 @@
-banner: "AUTHORIZED TARGETS ONLY - loopback + RFC1918 default scope"
+banner: "AUTHORIZED TARGETS ONLY - open scope (any target); you are responsible for authorization"
 
+# Open by default, like nmap: every IPv4 and IPv6 target is permitted.
+# YOU are solely responsible for only scanning targets you are authorized to test.
+#
+# To put the safety rail back, replace the allowlist below with your own ranges
+# (e.g. 10.0.0.0/8, 192.168.0.0/16) or pass --scope your_scope.yaml. The scope
+# engine is unchanged and still enforces whatever allowlist/denylist you give it.
 allowlist:
-  # RFC1918 / loopback (default — do NOT add public IPs here without explicit authorization)
-  - 127.0.0.1/8
-  - 10.0.0.0/8
-  - 172.16.0.0/12
-  - 192.168.0.0/16
+  - 0.0.0.0/0
+  - "::/0"
 
+# Add CIDRs here to carve out targets you must never touch (denylist wins over
+# allowlist). Empty by default.
 denylist: []
 
-max_hosts_per_scan: 1024
-max_ports_per_host: 1000
+max_hosts_per_scan: 1048576
+max_ports_per_host: 65535

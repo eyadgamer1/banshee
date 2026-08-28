@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.7.0] — 2026-08-28
+
+Scope is open by default, so BANSHEE scans any target out of the box like `nmap`.
+
+### Changed
+
+- **Open default scope (nmap-style).** The built-in default scope now admits
+  every IPv4 and IPv6 target, so `banshee <any target>` works immediately with no
+  scope file to edit. Previously the default allowed only loopback and RFC1918
+  ranges and refused public addresses. **You are responsible for only scanning
+  targets you are authorized to test** — unauthorized scanning is illegal in most
+  jurisdictions.
+- The scope engine is unchanged and still enforces any allowlist/denylist you
+  supply. Pass `--scope your.yaml` to restrict BANSHEE to a lab or engagement
+  range; out-of-scope targets are still refused with **exit code 3**.
+- Raised the default per-scan caps to `max_hosts_per_scan: 1048576` and
+  `max_ports_per_host: 65535` so realistic scans aren't capped by the default.
+- The startup line and scope banner now print an open-scope authorization
+  reminder instead of "loopback + RFC1918".
+
+### Fixed
+
+- Install docs: the Kali/Debian quick-start ran `exec $SHELL` between installing
+  uv and installing BANSHEE, which replaced the shell and silently dropped the
+  BANSHEE install step. Replaced with a non-destructive `PATH` export plus
+  `uv tool update-shell`, and added a "command not found" troubleshooting note.
+
 ## [1.6.0] — 2026-08-28
 
 Hardened error handling, a cleaner live dashboard, and a simpler install/update story.

@@ -258,8 +258,9 @@ def _resolve_scope_file(scope_file: str, console: Console, *, quiet: bool) -> st
         return scope_file
     if not quiet:
         console.print(
-            "[dim]using built-in default scope (loopback + RFC1918); "
-            "add config/scope.yaml or pass --scope to customize[/dim]"
+            "[yellow]open scope: every target is allowed (nmap-style). "
+            "You are responsible for authorization on every target. "
+            "Pass --scope to restrict to a lab range.[/yellow]"
         )
     return str(packaged)
 
