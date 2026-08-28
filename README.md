@@ -194,20 +194,27 @@ banshee 192.168.1.0/24 --engine go --mode normal
 
 ### Updating to the latest version
 
-Run the command that matches how you installed it:
-
-```bash
-uv tool upgrade banshee                                   # if installed with uv (recommended)
-pipx upgrade banshee                                      # if installed with pipx
-pip install --upgrade git+https://github.com/eyadgamer1/banshee   # if installed with pip
-```
-
-`uv tool upgrade banshee` re-pulls the latest `main`. If a release ever pins an
-old version, force a clean reinstall:
+BANSHEE installs straight from `main`. The reliable way to update — no matter how
+you first installed — is a clean reinstall with `uv`, which re-fetches the latest
+commit and rebuilds:
 
 ```bash
 uv tool install --reinstall git+https://github.com/eyadgamer1/banshee
 ```
+
+Prefer your package manager's own upgrade? Run the **one** line matching how you
+installed. Note the tool is registered under its package name **`banshee-scanner`**
+(the command it installs is `banshee`), so upgrade that name, not `banshee`:
+
+```bash
+uv tool upgrade banshee-scanner        # if you installed with uv
+pipx upgrade banshee-scanner           # if you installed with pipx
+```
+
+> **Debian / Kali: do not use bare `pip`.** There it is often Python 2.7, which
+> cannot build this Python 3.12 package (`ImportError: No module named importlib`).
+> Use `uv` (above), or if you must use pip, call Python 3 explicitly:
+> `python3 -m pip install --upgrade git+https://github.com/eyadgamer1/banshee`.
 
 Check what you're on with `banshee --version`. Updating the Go engine binary is
 separate: re-download it from [Releases](https://github.com/eyadgamer1/banshee/releases)
