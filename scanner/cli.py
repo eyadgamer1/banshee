@@ -329,7 +329,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     mode: Annotated[
         ScanMode,
         typer.Option("--mode", "-m", help="scan intensity", rich_help_panel=_INTENS),
-    ] = ScanMode.PASSIVE,
+    ] = ScanMode.NORMAL,
     timing: Annotated[
         int,
         typer.Option(
@@ -365,12 +365,12 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         str,
         typer.Option(
             "--engine",
-            help="active-scan engine: python (default), go (fast core), or auto "
-            "(Go when its binary is present, else Python). "
-            "Run `banshee install-engine` to get Go.",
+            help="active-scan engine: auto (default: Go if present, else fetched "
+            "automatically on first use, else Python), python (force in-process), "
+            "or go (force the fast core).",
             rich_help_panel=_ENGINE,
         ),
-    ] = "python",
+    ] = "auto",
     adaptive: Annotated[
         bool,
         typer.Option(
@@ -526,7 +526,15 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         choices = ", ".join(_ENGINE_CHOICES)
         console.print(f"[red]error:[/red] unknown --engine {engine!r}; choose from {choices}")
         raise typer.Exit(code=2)
-    engine = resolve_engine(engine)  # 'auto' -> 'go' if the binary is built, else 'python'
+    if mode == ScanMode.PASSIVE:
+        # Passive capture is scapy-only; the Go engine has no passive path.
+        engine = "python"
+    else:
+        # The Python engine handles plain scans, so only fetch Go on demand — when a
+        # Go-only feature needs it. Otherwise 'auto' uses Go if already present, else
+        # Python, with no surprise download on an ordinary scan.
+        needs_go = adaptive or udp or service_scan
+        engine = resolve_engine(engine, provision=needs_go, console=console)
     if adaptive and engine != "go":
         console.print(
             "[red]error:[/red] --adaptive needs the Go engine. Run "

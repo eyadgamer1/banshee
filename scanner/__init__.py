@@ -4,4 +4,4 @@ Passive-first network discovery, fingerprinting and risk reporting.
 Scanning and enumeration only. No exploitation. Ever.
 """
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"

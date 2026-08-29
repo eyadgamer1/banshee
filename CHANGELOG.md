@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.9.0] — 2026-08-29
+
+`banshee <target>` now scans out of the box — active by default, Go fetched on demand.
+
+### Changed
+
+- **Active scan is the default mode.** The CLI default is now `--mode normal`, so
+  `banshee <target>` actively probes and reports open ports/services immediately,
+  like `nmap`. Previously the default was `passive` (zero packets), which returned
+  no ports on a quiet target and confused first use. `-m passive` still gives the
+  zero-packet, observe-only sweep; the `ScanConfig` library default stays `passive`
+  (safe for programmatic callers).
+- **`--engine auto` is the default engine.** `auto` uses the Go core when its
+  binary is present and **fetches it automatically** the first time a Go-only
+  feature (`--adaptive`/`--udp`/`-sV`) needs it — no manual `install-engine` step.
+  If the download can't happen (offline, no asset for this platform), it degrades
+  quietly to the Python engine. Passive mode always uses Python (Go has no passive
+  capture path). Force either side with `--engine python` / `--engine go`.
+
 ## [1.8.0] — 2026-08-29
 
 The Go engine is now one command away, so `--engine go` works without a Go toolchain.

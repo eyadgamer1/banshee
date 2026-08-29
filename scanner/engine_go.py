@@ -81,11 +81,16 @@ def find_engine() -> str:
     raise RuntimeError(_build_hint())
 
 
-def resolve_engine(engine: str) -> str:
+def resolve_engine(engine: str, *, provision: bool = False, console: Any = None) -> str:
     """Resolve the ``auto`` engine choice to a concrete one.
 
     ``auto`` picks the Go engine when its binary is available, else falls back to
     the in-process Python engine. ``python``/``go`` pass through unchanged.
+
+    When ``provision`` is set and no binary is found, make one attempt to download
+    the prebuilt engine (so ``auto`` "just works" after a fresh install with no
+    manual ``banshee install-engine`` step). Any failure — offline, no asset for
+    this platform, arch mismatch — degrades quietly to the Python engine.
     """
     if engine != "auto":
         return engine
@@ -93,6 +98,17 @@ def resolve_engine(engine: str) -> str:
         find_engine()
         return "go"
     except RuntimeError:
+        pass
+    if not provision:
+        return "python"
+    try:
+        from scanner.engine_install import install_engine
+
+        install_engine(console)  # prints its own dim one-time progress line
+        find_engine()
+        return "go"
+    except Exception as exc:  # noqa: BLE001 — graceful degradation is the point
+        log.debug("auto engine provision failed, using python: %s", exc)
         return "python"
 
 

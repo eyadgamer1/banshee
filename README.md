@@ -48,7 +48,7 @@
 
 ## What is BANSHEE?
 
-BANSHEE is a **passive-first network scanner**. Point it at a network you are authorized to assess and it maps every host, fingerprints services, classifies devices, spots rogue hardware, and produces a risk report — in its default mode without sending a single packet.
+BANSHEE is a **network scanner with a first-class passive mode**. Point it at a network you are authorized to assess and it maps every host, fingerprints services, classifies devices, spots rogue hardware, and produces a risk report. It **scans actively by default like `nmap`** — `banshee <target>` just works. Add `-m passive` for a zero-packet, observe-only sweep that sends nothing on the wire.
 
 It is built for ethical hackers and defenders who care about two things most scanners ignore:
 
@@ -322,7 +322,7 @@ BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; 
 
 | Flag | Description |
 |---|---|
-| `-m, --mode [passive\|stealth\|normal\|aggressive]` | Scan intensity (default **`passive`**) |
+| `-m, --mode [passive\|stealth\|normal\|aggressive]` | Scan intensity (default **`normal`** — actively probes like `nmap`). `passive` sends zero packets (observe-only) |
 | `-T, --timing 0..5` | Timing template, T0 (paranoid) … T5 (insane), default `3` |
 | `--rate INTEGER` | Max packets/sec |
 | `--timeout INTEGER` | Probe timeout ms (default from `-T`) |
@@ -334,7 +334,7 @@ BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; 
 
 | Flag | Description |
 |---|---|
-| `--engine [python\|go\|auto]` | Active-scan core (default **`python`**). `go` delegates discovery/probing to the fast, low-memory static binary; `auto` uses `go` when the binary is present, else `python`. Passive capture, analysis and reporting stay Python either way |
+| `--engine [python\|go\|auto]` | Active-scan core (default **`auto`**). `auto` uses `go` when its binary is present — and **fetches it automatically** the first time a Go-only feature (`--adaptive`/`--udp`/`-sV`) needs it — else falls back to `python`. `go` forces the fast static binary; `python` forces the in-process engine. Passive capture, analysis and reporting stay Python either way |
 | `--adaptive` | Go only: pick probes by information-gain per unit of detection risk and stop early once a device class is confident. The report and JSON then include a `plan` block — probes saved, detection risk spent, and per-host device classification (requires `--engine go`/`auto`) |
 | `--udp` | Go only: UDP scan (like `nmap -sU`). A replying port is **open**, an ICMP-unreachable is **closed**, and a **silent** port is honestly **`open\|filtered`** — never a fake "open" (requires `--engine go`/`auto`; mutually exclusive with `--adaptive`) |
 | `-sV, --service-scan` | Go only: identify a service's **product + version** from its banner. Match-only — a version is reported **only** when a captured banner matches a signature, never guessed from the port (requires `--engine go`/`auto`; TCP-only) |

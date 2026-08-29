@@ -112,8 +112,9 @@ _runner = CliRunner()
 
 
 def test_udp_without_go_engine_is_rejected():
-    # --udp defaults to the python engine, which cannot do UDP: fail loudly, exit 2.
-    result = _runner.invoke(app, ["127.0.0.1", "--udp"])
+    # The python engine cannot do UDP: fail loudly, exit 2. Pin python so the test
+    # doesn't auto-fetch the Go engine on a box with network access.
+    result = _runner.invoke(app, ["127.0.0.1", "--udp", "--engine", "python"])
     assert result.exit_code == 2
     assert "--udp needs the Go engine" in result.output
 

@@ -58,7 +58,9 @@ def test_missing_scope_file_exits_2():
 def test_json_output_written(scope_file, tmp_path):
     out = tmp_path / "r.json"
     result = runner.invoke(
-        app, ["10.0.0.1", "--dry-run", "--silent", "--scope", scope_file, "--json", str(out)]
+        app,
+        ["10.0.0.1", "--dry-run", "--silent", "--engine", "python", "--scope", scope_file,
+         "--json", str(out)],
     )
     assert result.exit_code == 0
     data = json.loads(out.read_text(encoding="utf-8"))
@@ -80,7 +82,9 @@ def test_all_formats_written(scope_file, tmp_path):
 def test_silent_produces_no_stdout(scope_file, tmp_path):
     out = tmp_path / "r.json"
     result = runner.invoke(
-        app, ["10.0.0.1", "--dry-run", "--silent", "--scope", scope_file, "--json", str(out)]
+        app,
+        ["10.0.0.1", "--dry-run", "--silent", "--engine", "python", "--scope", scope_file,
+         "--json", str(out)],
     )
     assert result.exit_code == 0
     assert result.stdout.strip() == ""
@@ -89,7 +93,9 @@ def test_silent_produces_no_stdout(scope_file, tmp_path):
 def test_range_expands_multiple_hosts(scope_file, tmp_path):
     out = tmp_path / "r.json"
     result = runner.invoke(
-        app, ["10.0.0.1-3", "--dry-run", "--silent", "--scope", scope_file, "--json", str(out)]
+        app,
+        ["10.0.0.1-3", "--dry-run", "--silent", "--engine", "python", "--scope", scope_file,
+         "--json", str(out)],
     )
     assert result.exit_code == 0
     data = json.loads(out.read_text(encoding="utf-8"))
@@ -100,7 +106,8 @@ def test_audit_log_written(scope_file, tmp_path):
     audit = tmp_path / "audit.jsonl"
     result = runner.invoke(
         app,
-        ["10.0.0.1", "--dry-run", "--silent", "--scope", scope_file, "--audit-log", str(audit)],
+        ["10.0.0.1", "--dry-run", "--silent", "--engine", "python", "--scope", scope_file,
+         "--audit-log", str(audit)],
     )
     assert result.exit_code == 0
     lines = audit.read_text(encoding="utf-8").strip().splitlines()

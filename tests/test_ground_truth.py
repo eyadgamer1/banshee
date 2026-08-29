@@ -77,6 +77,7 @@ def scan_localhost(scope_file, tmp_path, ports: list[int]) -> dict:
         [
             "127.0.0.1",
             "--mode", "normal",
+            "--engine", "python",  # ground truth pins the reference (Python) path
             "-T", "4",
             "--sniff-timeout", "0.5",
             "--no-fingerprint",
