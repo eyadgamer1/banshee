@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.8.0] — 2026-08-29
+
+The Go engine is now one command away, so `--engine go` works without a Go toolchain.
+
+### Added
+
+- **`banshee install-engine`.** Downloads the prebuilt Go engine for your OS/arch
+  from GitHub Releases and drops it next to the installed `banshee` (already on
+  PATH), so `--engine go` and `--engine auto` pick it up with no extra setup. The
+  Python wheel can't bundle a per-OS binary, so the engine ships as a separate
+  release asset — this command fetches the right one. Stdlib-only (no new
+  dependency). Options: `--tag <release>` (default: latest) and `--dir <path>`.
+- The three "requires the Go engine" errors (`--adaptive`, `--udp`, service scan
+  without `--engine go`) now point at `banshee install-engine` as the one-line fix.
+
 ## [1.7.0] — 2026-08-28
 
 Scope is open by default, so BANSHEE scans any target out of the box like `nmap`.

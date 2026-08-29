@@ -179,7 +179,25 @@ go build -o banshee-engine ./cmd/banshee-engine
 ./banshee-engine -h
 ```
 
-**Prebuilt Go engine — no toolchain needed.** Every tagged release ships static
+**Easiest — one command.** After installing BANSHEE, pull the matching prebuilt
+engine straight onto your `PATH`:
+
+```bash
+banshee install-engine
+```
+
+It detects your OS/arch, downloads the right `banshee-engine` from the latest
+release, drops it next to the `banshee` command, and verifies it runs — no Go
+toolchain, no manual download. Then the Go engine just works:
+
+```bash
+banshee scanme.nmap.org --engine go -sV --mode normal
+```
+
+Options: `banshee install-engine --tag v1.3.0` pins a release; `--dir PATH`
+installs somewhere specific.
+
+**Prebuilt Go engine — manual download.** Every tagged release also ships static
 `banshee-engine` binaries for Linux (amd64/arm64), Windows, and macOS
 (Intel/Apple Silicon) on the [Releases](https://github.com/eyadgamer1/banshee/releases)
 page. Download the one for your platform, mark it executable, and either put it on
@@ -544,7 +562,7 @@ uv run pytest tests/test_ground_truth.py -v
 10 passed
 ```
 
-The full suite (305 tests) proves the hard cases against reality on loopback:
+The full suite (314 tests) proves the hard cases against reality on loopback:
 cross-engine **parity** (Python and Go agree port-for-port), **UDP ground
 truth** — a replying UDP port is reported `open`, a silent one is `open|filtered`
 and *never* a fake "open" — and **service-version honesty**, that `-sV` extracts a
@@ -625,7 +643,7 @@ alone, so an ordinary web+SSH server is left untouched.
 |---|---|
 | `scope file not found` | You passed `--scope` with a path that doesn't exist. Without `--scope`, a built-in default is used automatically. |
 | Everything reports out-of-scope | Only happens when you passed a restrictive `--scope`: your target isn't in that file's `allowlist`. Add it, or drop `--scope` to use the open default (see [Scope](#scope--authorization)). Exit code **3**. |
-| `banshee-engine binary not found` | `--engine go` can't find the engine. Build it (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`), download a [release binary](https://github.com/eyadgamer1/banshee/releases), set `BANSHEE_ENGINE=/path/to/banshee-engine`, or use `--engine auto` to fall back to Python. |
+| `banshee-engine binary not found` | `--engine go` can't find the engine. Easiest fix: **`banshee install-engine`** (downloads the prebuilt binary onto your PATH). Or build it (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`), set `BANSHEE_ENGINE=/path/to/banshee-engine`, or use `--engine auto` to fall back to Python. |
 | `--udp needs the Go engine` | `--udp` (and `--adaptive`) run only on the Go engine. Add `--engine go` (or `--engine auto` with the binary present). |
 | `--udp and --adaptive are mutually exclusive` | Pick one: UDP scan **or** the TCP adaptive planner. |
 | UDP scan shows lots of `open\|filtered` | Working as intended — that's an honest "can't tell open from filtered", not a bug. A firewall dropping UDP looks identical to a silent open service; only a reply proves `open`. |

@@ -31,6 +31,7 @@ from scanner.core.models import ScanConfig, ScanMode, ScanResult
 from scanner.core.scope import AuditLog, ScopeGuard, ScopeViolationError
 from scanner.correlate import build_attack_graph, build_segment_map, score_deception
 from scanner.engine_go import resolve_engine, run_go_engine
+from scanner.engine_install import EngineInstallError, install_engine
 from scanner.intel import enrich_result, prioritize_result
 from scanner.llm import generate_report, run_react_loop
 from scanner.plugins import run_plugins
@@ -364,7 +365,9 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         str,
         typer.Option(
             "--engine",
-            help="active-scan engine: python (default), go (fast core), or auto (go if built)",
+            help="active-scan engine: python (default), go (fast core), or auto "
+            "(Go when its binary is present, else Python). "
+            "Run `banshee install-engine` to get Go.",
             rich_help_panel=_ENGINE,
         ),
     ] = "python",
@@ -526,14 +529,14 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     engine = resolve_engine(engine)  # 'auto' -> 'go' if the binary is built, else 'python'
     if adaptive and engine != "go":
         console.print(
-            "[red]error:[/red] --adaptive needs the Go engine (pass --engine go, "
-            "or --engine auto with the binary built)"
+            "[red]error:[/red] --adaptive needs the Go engine. Run "
+            "`banshee install-engine` to download it, or build it and pass --engine go."
         )
         raise typer.Exit(code=2)
     if udp and engine != "go":
         console.print(
-            "[red]error:[/red] --udp needs the Go engine (pass --engine go, "
-            "or --engine auto with the binary built)"
+            "[red]error:[/red] --udp needs the Go engine. Run "
+            "`banshee install-engine` to download it, or build it and pass --engine go."
         )
         raise typer.Exit(code=2)
     if udp and adaptive:
@@ -544,8 +547,8 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         raise typer.Exit(code=2)
     if service_scan and engine != "go":
         console.print(
-            "[red]error:[/red] -sV/--service-scan needs the Go engine (pass --engine go, "
-            "or --engine auto with the binary built)"
+            "[red]error:[/red] -sV/--service-scan needs the Go engine. Run "
+            "`banshee install-engine` to download it, or build it and pass --engine go."
         )
         raise typer.Exit(code=2)
     if service_scan and udp:
@@ -742,12 +745,42 @@ def diff(
     render_diff(delta, console)
 
 
+install_app = typer.Typer(
+    add_completion=False,
+    rich_markup_mode="rich",
+    help="Download the prebuilt Go engine so `--engine go` works without a toolchain.",
+)
+
+
+@install_app.command()
+def install_engine_cmd(
+    tag: Annotated[
+        str | None,
+        typer.Option("--tag", help="release tag to fetch (default: latest)"),
+    ] = None,
+    dest_dir: Annotated[
+        str | None,
+        typer.Option("--dir", help="directory to install into (default: next to `banshee`)"),
+    ] = None,
+) -> None:
+    """Fetch the banshee-engine binary for this OS/arch from GitHub Releases."""
+    console = Console()
+    try:
+        install_engine(console, tag=tag, dest_dir=dest_dir)
+    except EngineInstallError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
 def main() -> None:
-    """Console entry point. Routes `banshee diff ...` to the diff app and every
-    other invocation to the scan command, so both verbs share one `banshee`."""
+    """Console entry point. Routes `banshee diff ...` and `banshee install-engine
+    ...` to their own apps and every other invocation to the scan command, so all
+    verbs share one `banshee`."""
     argv = sys.argv[1:]
     if argv and argv[0] == "diff":
         diff_app(args=argv[1:])
+    elif argv and argv[0] == "install-engine":
+        install_app(args=argv[1:])
     else:
         app()
 

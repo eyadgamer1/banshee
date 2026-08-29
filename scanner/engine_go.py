@@ -48,7 +48,9 @@ _BINARY_NAME = "banshee-engine.exe" if os.name == "nt" else "banshee-engine"
 def _build_hint() -> str:
     exe = "banshee-engine.exe" if os.name == "nt" else "banshee-engine"
     return (
-        "banshee-engine binary not found. Build it with:\n"
+        "banshee-engine binary not found. Easiest fix — download the prebuilt engine:\n"
+        "  banshee install-engine\n"
+        "Or build it from source:\n"
         f"  cd engine && go build -o {exe} ./cmd/banshee-engine\n"
         "then re-run, or set BANSHEE_ENGINE=/path/to/banshee-engine, "
         "or put the binary on your PATH."
