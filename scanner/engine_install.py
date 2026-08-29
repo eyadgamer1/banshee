@@ -66,11 +66,17 @@ def _asset_name(system: str, machine: str) -> str:
 
 
 def _dest_dir() -> Path:
-    """Where to place the binary: alongside the installed `banshee` (already on
-    PATH) when we can find it, otherwise the conventional user bin dir."""
+    """Where to place the binary: alongside the installed `banshee` launcher, using
+    its on-PATH location and NOT its symlink target.
+
+    `uv tool install` puts a shim in `~/.local/bin` (on PATH) that points into the
+    tool's venv bin (NOT on PATH). Resolving the symlink would drop the engine in
+    the venv, where neither `shutil.which("banshee-engine")` nor `--engine go` can
+    ever find it — the exact failure this avoids. So we keep the launcher's own
+    directory (the on-PATH one)."""
     banshee = shutil.which("banshee")
     if banshee:
-        return Path(banshee).resolve().parent
+        return Path(banshee).parent
     subdir = ".local/bin" if os.name != "nt" else "AppData/Local/banshee/bin"
     return Path.home() / subdir
 

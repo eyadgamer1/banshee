@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.9.1] — 2026-08-29
+
+### Fixed
+
+- **`install-engine` installed the Go binary off PATH, so `--engine go` / `-sV` /
+  `--udp` still failed right after "installed".** `uv tool install` puts the
+  `banshee` launcher in `~/.local/bin` (on PATH) as a shim pointing into the tool's
+  venv bin (not on PATH). `_dest_dir()` resolved that symlink and dropped the engine
+  in the venv, where `find_engine()` could never see it. It now installs next to the
+  launcher's on-PATH location (the shim), so the fetched engine is found immediately
+  — both by the automatic on-demand fetch and by `banshee install-engine`.
+
 ## [1.9.0] — 2026-08-29
 
 `banshee <target>` now scans out of the box — active by default, Go fetched on demand.

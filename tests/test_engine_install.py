@@ -36,6 +36,24 @@ def test_dest_dir_prefers_the_banshee_bin_dir(monkeypatch):
     assert _dest_dir().name == "bin"
 
 
+def test_dest_dir_uses_on_path_shim_not_symlink_target(monkeypatch, tmp_path):
+    # Regression: uv's `banshee` in ~/.local/bin (on PATH) is a shim into the tool
+    # venv bin (NOT on PATH). The engine must land next to the shim, or find_engine
+    # and `--engine go` never see it. _dest_dir must not resolve the symlink.
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "banshee").write_text("#!/bin/sh\n")
+    shim_dir = tmp_path / "localbin"
+    shim_dir.mkdir()
+    shim = shim_dir / "banshee"
+    try:
+        shim.symlink_to(venv_bin / "banshee")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this host")
+    monkeypatch.setattr(engine_install.shutil, "which", lambda _n: str(shim))
+    assert _dest_dir() == shim_dir
+
+
 def test_install_engine_cmd_passes_options_through(monkeypatch):
     seen = {}
 
