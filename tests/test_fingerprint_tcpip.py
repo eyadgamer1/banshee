@@ -47,9 +47,9 @@ def test_os_table_255_small_stays_cisco():
 
 
 @pytest.mark.asyncio
-async def test_fingerprint_noop_in_passive_mode():
+async def test_fingerprint_noop_when_budget_forbids_active():
     fp = TcpIpFingerprinter()
-    ctx = make_ctx(budget=make_budget(mode=ScanMode.PASSIVE, timing=0))
+    ctx = make_ctx(budget=make_budget(mode=ScanMode.NORMAL, timing=0, max_detect_risk=0))
     host = make_host(ports=[80])
     await fp.fingerprint(host, ctx)
     assert host.os_guess is None  # never probed

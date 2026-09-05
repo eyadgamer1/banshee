@@ -41,13 +41,11 @@ class Severity(StrEnum):
 class ScanMode(StrEnum):
     """Intensity dial (separate from verbosity).
 
-    PASSIVE     — zero active packets; observe only.
     STEALTH     — minimal, rate-limited active probes.
     NORMAL      — standard active discovery + fingerprint.
     AGGRESSIVE  — full probe set, max concurrency.
     """
 
-    PASSIVE = "passive"
     STEALTH = "stealth"
     NORMAL = "normal"
     AGGRESSIVE = "aggressive"
@@ -155,11 +153,10 @@ class ScanConfig(BaseModel):
     """Resolved run configuration — produced by the CLI, consumed by the engine."""
 
     targets: list[str] = Field(default_factory=list)
-    iface: str | None = None
-    pcap: str | None = None
+    iface: str | None = None  # capture NIC for raw-socket fingerprinters (e.g. TLS JA4)
 
     # intensity dial
-    mode: ScanMode = ScanMode.PASSIVE
+    mode: ScanMode = ScanMode.NORMAL
     timing: int = 3  # -T0..T5
     rate: int | None = None  # packets/sec cap
     # None => inherit from the -T timing template; an explicit value overrides it
@@ -167,7 +164,7 @@ class ScanConfig(BaseModel):
     timeout_ms: int | None = None
     retries: int | None = None
     threads: int | None = None
-    max_detect_risk: int | None = None  # 0 = passive only
+    max_detect_risk: int | None = None  # 0 = no active probes (noise ceiling)
 
     # active-scan engine: "python" (default, in-process asyncio) or "go" (the fast,
     # low-memory static core; see scanner/engine_go.py). Passive/analysis/report
@@ -186,9 +183,6 @@ class ScanConfig(BaseModel):
 
     # port selection — None inherits the discoverer's default probe set
     ports: list[int] | None = None
-
-    # seconds the passive sniffer listens before returning what it saw
-    sniff_timeout: float = 10.0
 
     # Feature toggles. Every one of these is written by the CLI and serialised
     # into the report, so a consumer can tell "clean" from "that pass never ran".

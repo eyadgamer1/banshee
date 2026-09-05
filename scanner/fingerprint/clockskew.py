@@ -10,7 +10,7 @@ Skew categories:
   high       → no NTP, clock drift (200–2000 ppm)
   extreme    → wrapped counter or spoofed timestamp
 
-Only runs if mode != PASSIVE and an open TCP port is known.
+Only runs when the budget allows active probes and an open TCP port is known.
 """
 
 from __future__ import annotations

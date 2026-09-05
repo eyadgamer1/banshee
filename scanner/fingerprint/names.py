@@ -1,7 +1,7 @@
 """B6 — name resolution: reverse DNS, mDNS, and NetBIOS.
 
 Every method here puts a packet on the wire, so each is gated by the budget:
-in PASSIVE mode (``can_send()`` False) this fingerprinter is a complete no-op.
+when the budget forbids active probes (``can_send()`` False) this fingerprinter is a complete no-op.
 
   * reverse DNS — the portable workhorse, via the system resolver.
   * mDNS        — best-effort reverse PTR over 224.0.0.251:5353 (link-local).

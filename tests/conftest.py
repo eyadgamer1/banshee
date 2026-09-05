@@ -57,7 +57,8 @@ def scope() -> ScopeGuard:
 
 @pytest.fixture
 def passive_ctx() -> RunContext:
-    return make_ctx(budget=make_budget(mode=ScanMode.PASSIVE, timing=0))
+    # zero-active budget: no packets allowed (max-detect-risk 0)
+    return make_ctx(budget=make_budget(mode=ScanMode.NORMAL, timing=0, max_detect_risk=0))
 
 
 @pytest.fixture

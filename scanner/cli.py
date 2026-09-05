@@ -217,7 +217,7 @@ app = typer.Typer(
     rich_markup_mode="rich",
     no_args_is_help=True,
     help=(
-        "[bold red]BANSHEE[/bold red] — passive-first network discovery, "
+        "[bold red]BANSHEE[/bold red] — active network discovery, "
         "fingerprinting & risk reporting. [dim]No exploitation. Ever.[/dim]"
     ),
 )
@@ -284,11 +284,8 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     ] = None,
     iface: Annotated[
         str | None,
-        typer.Option("--iface", "-i", help="capture interface", rich_help_panel=_TARGETS),
-    ] = None,
-    pcap: Annotated[
-        str | None,
-        typer.Option("--pcap", help="read from pcap instead of live", rich_help_panel=_TARGETS),
+        typer.Option("--iface", "-i", rich_help_panel=_TARGETS,
+                     help="capture NIC for raw-socket fingerprinting (e.g. TLS JA4)"),
     ] = None,
     ports: Annotated[
         str | None,
@@ -299,15 +296,6 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             rich_help_panel=_TARGETS,
         ),
     ] = None,
-    sniff_timeout: Annotated[
-        float,
-        typer.Option(
-            "--sniff-timeout",
-            min=0.0,
-            help="seconds the passive sniffer listens before reporting",
-            rich_help_panel=_TARGETS,
-        ),
-    ] = 10.0,
     # --- verbosity dial ---
     verbose: Annotated[
         int, typer.Option("--verbose", "-v", count=True, help="-v/-vv/-vvv", rich_help_panel=_VERB)
@@ -357,7 +345,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     ] = None,
     max_detect_risk: Annotated[
         int | None,
-        typer.Option("--max-detect-risk", min=0, max=10, help="0=passive..10=full",
+        typer.Option("--max-detect-risk", min=0, max=10, help="0=no active probes..10=full",
                      rich_help_panel=_INTENS),
     ] = None,
     # --- engine ---
@@ -526,15 +514,11 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         choices = ", ".join(_ENGINE_CHOICES)
         console.print(f"[red]error:[/red] unknown --engine {engine!r}; choose from {choices}")
         raise typer.Exit(code=2)
-    if mode == ScanMode.PASSIVE:
-        # Passive capture is scapy-only; the Go engine has no passive path.
-        engine = "python"
-    else:
-        # The Python engine handles plain scans, so only fetch Go on demand — when a
-        # Go-only feature needs it. Otherwise 'auto' uses Go if already present, else
-        # Python, with no surprise download on an ordinary scan.
-        needs_go = adaptive or udp or service_scan
-        engine = resolve_engine(engine, provision=needs_go, console=console)
+    # The Python engine handles plain scans, so only fetch Go on demand — when a
+    # Go-only feature needs it. Otherwise 'auto' uses Go if already present, else
+    # Python, with no surprise download on an ordinary scan.
+    needs_go = adaptive or udp or service_scan
+    engine = resolve_engine(engine, provision=needs_go, console=console)
     if adaptive and engine != "go":
         console.print(
             "[red]error:[/red] --adaptive needs the Go engine. Run "
@@ -592,16 +576,10 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         console.print("[red]error:[/red] no valid targets (expected IP, CIDR, range, or hostname)")
         raise typer.Exit(code=2)
 
-    if pcap and not Path(pcap).exists():
-        console.print(f"[red]error:[/red] pcap file not found: {pcap}")
-        raise typer.Exit(code=2)
-
     cfg = ScanConfig(
         targets=targets,
         iface=iface,
-        pcap=pcap,
         ports=parsed_ports,
-        sniff_timeout=sniff_timeout,
         mode=mode,
         timing=timing,
         rate=rate,

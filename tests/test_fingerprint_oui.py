@@ -60,8 +60,8 @@ async def test_fingerprint_no_mac_no_vendor():
 
 
 @pytest.mark.asyncio
-async def test_fingerprint_runs_in_passive_mode():
-    # OUI is read-only (ARP cache) — must work even with a passive budget.
+async def test_fingerprint_runs_with_zero_budget():
+    # OUI is read-only (ARP cache) — must work even when no active packets are allowed.
     from scanner.core.models import ScanMode
 
     from .conftest import make_budget
@@ -69,6 +69,6 @@ async def test_fingerprint_runs_in_passive_mode():
     fp = OuiFingerprinter()
     fp._arp = {"10.0.0.5": "b8:27:eb:00:11:22"}
     host = make_host(ip="10.0.0.5")
-    ctx = make_ctx(budget=make_budget(mode=ScanMode.PASSIVE, timing=0))
+    ctx = make_ctx(budget=make_budget(mode=ScanMode.NORMAL, timing=0, max_detect_risk=0))
     await fp.fingerprint(host, ctx)
     assert host.vendor == "Raspberry Pi"

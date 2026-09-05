@@ -43,18 +43,14 @@ def get_fingerprinters(cfg: ScanConfig) -> list[Fingerprinter]:
     fingerprinters: list[Fingerprinter] = [OuiFingerprinter(), DhcpFingerprinter()]
     if cfg.names:
         fingerprinters.append(NameResolver())
-    # B3 and B4 need raw sockets — skip in passive mode
-    from scanner.core.models import ScanMode
-
-    if cfg.mode != ScanMode.PASSIVE:
-        fingerprinters.append(TcpIpFingerprinter())
-        fingerprinters.append(TlsJa4Fingerprinter(iface=cfg.iface))
+    # B3/B4 raw-socket probes and B7 clock-skew are active; the budget still gates
+    # the actual packets (nothing is sent at max-detect-risk 0).
+    fingerprinters.append(TcpIpFingerprinter())
+    fingerprinters.append(TlsJa4Fingerprinter(iface=cfg.iface))
     # B5 classifier is always safe (local, no network)
     if cfg.classify:
         fingerprinters.append(DeviceClassifier())
-    # B7 clock-skew — active, skipped in passive mode
-    if cfg.mode != ScanMode.PASSIVE:
-        fingerprinters.append(ClockSkewFingerprinter())
+    fingerprinters.append(ClockSkewFingerprinter())
     # B8 negative-space — purely analytical, always safe
     fingerprinters.append(NegativeSpaceFingerprinter())
     return fingerprinters

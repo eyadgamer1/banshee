@@ -17,9 +17,9 @@ from .conftest import make_budget, make_ctx
 
 
 @pytest.mark.asyncio
-async def test_tcp_sweep_passive_sends_nothing():
+async def test_tcp_sweep_zero_budget_sends_nothing():
     disc = TcpSweepDiscoverer(ports=[80])
-    ctx = make_ctx(budget=make_budget(mode=ScanMode.PASSIVE, timing=0))
+    ctx = make_ctx(budget=make_budget(mode=ScanMode.NORMAL, timing=0, max_detect_risk=0))
     hosts = await disc.discover(["10.0.0.5"], ctx)
     assert hosts == []
 
@@ -133,19 +133,8 @@ def test_parse_reply_rejects_truncated():
 # ----- discoverer selection --------------------------------------------------
 
 
-def test_passive_mode_only_sniffer():
-    discs = get_discoverers(ScanConfig(mode=ScanMode.PASSIVE))
-    names = {d.name for d in discs}
-    assert names == {"passive-sniffer"}
-
-
-def test_normal_mode_adds_active():
+def test_discoverers_are_active():
     discs = get_discoverers(ScanConfig(mode=ScanMode.NORMAL))
     names = {d.name for d in discs}
     assert "tcp-sweep" in names
     assert "icmp-ping" in names
-
-
-def test_pcap_mode_only_pcap():
-    discs = get_discoverers(ScanConfig(mode=ScanMode.NORMAL, pcap="x.pcap"))
-    assert [d.name for d in discs] == ["pcap"]

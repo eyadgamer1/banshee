@@ -42,7 +42,7 @@ class Discoverer(Protocol):
     """Finds live hosts among in-scope targets (A2–A5).
 
     MUST respect ctx.scope (never touch an out-of-scope IP) and ctx.budget
-    (honor passive mode = zero active packets).
+    (honor the budget — zero active packets at max-detect-risk 0).
     """
 
     name: str

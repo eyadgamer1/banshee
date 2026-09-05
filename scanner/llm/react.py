@@ -87,7 +87,7 @@ _TOOLS: dict[str, Any] = {
 }
 
 _SYSTEM_PROMPT = """\
-You are a network security analyst reviewing a passive network scan result.
+You are a network security analyst reviewing a network scan result.
 You have access to the following read-only tools:
   list_hosts()          — list all discovered hosts with ports
   list_findings()       — list all findings with severity

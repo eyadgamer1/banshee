@@ -13,7 +13,7 @@ field-for-field. Python keeps its own `ScanConfig`; only the discovered
 hosts/stats come from Go.
 
 Safety is unchanged: the Go binary loads the *same* scope file and enforces it
-itself (there is no override flag), and a passive budget puts zero packets on the
+itself (there is no override flag), and a zero-packet budget puts nothing on the
 wire. This bridge additionally mirrors the Python scope contract — if every
 requested target is out of scope, it raises `ScopeViolationError` rather than
 returning a silent empty result.
@@ -202,8 +202,8 @@ def build_args(cfg: ScanConfig, scope_path: str, targets: list[str]) -> list[str
     if not cfg.fingerprint:
         args.append("-banners=false")
 
-    # dry-run is a hard promise of zero packets; force the passive budget rather
-    # than trusting mode alone. (The Go engine treats max-detect-risk 0 as passive.)
+    # dry-run is a hard promise of zero packets; force the zero-risk budget rather
+    # than trusting mode alone. (The Go engine treats max-detect-risk 0 as no probes.)
     if cfg.dry_run:
         args += ["-max-detect-risk", "0"]
     elif cfg.max_detect_risk is not None:

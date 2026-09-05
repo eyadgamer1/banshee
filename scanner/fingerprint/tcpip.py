@@ -5,7 +5,7 @@ window size. Combines with any prior TTL observations to infer the OS family.
 
 Degrades to a no-op when:
   - scapy raw-socket permission is unavailable
-  - budget disallows active probing (PASSIVE mode)
+  - budget disallows active probing (max-detect-risk 0)
   - no open port is known for the host yet
 
 This is a lightweight approximation — sufficient for device-type disambiguation

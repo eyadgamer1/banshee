@@ -5,7 +5,7 @@ common ports. An accepted connect proves the host is up *and* yields a CONFIRMED
 open service; a connection-refused also proves the host is up (something answered)
 but the port is closed. Timeouts and unreachable errors are treated as no signal.
 
-Honors the StealthBudget (PASSIVE mode => zero packets, enforced via `can_send`)
+Honors the StealthBudget (max-detect-risk 0 => zero packets, enforced via `can_send`)
 and the ScopeGuard (never touch an out-of-scope IP — defense in depth, since the
 engine already scope-filters). No raw sockets, no admin required.
 """
@@ -68,7 +68,7 @@ class TcpSweepDiscoverer:
         self.ports = tuple(ports)
 
     async def discover(self, targets: Sequence[str], ctx: ScanContext) -> list[Host]:
-        # PASSIVE / max-detect-risk 0 => the budget forbids active probes: send nothing.
+        # max-detect-risk 0 => the budget forbids active probes: send nothing.
         if not ctx.budget.can_send():
             ctx.audit.log("discover_skip", discoverer=self.name, reason="passive")
             return []

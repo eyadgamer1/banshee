@@ -4,7 +4,7 @@ Intensity (how loud) is kept strictly separate from verbosity (how chatty).
 Inputs: --mode {passive|stealth|normal|aggressive}, -T0..T5, --rate, --timeout,
 --retries, --threads, --max-detect-risk.
 
-PASSIVE (or --max-detect-risk 0) => zero active packets, full stop. The budget is
+--max-detect-risk 0 => zero active packets, full stop. The budget is
 the single source of truth the engine consults before emitting any active probe.
 """
 
@@ -30,7 +30,6 @@ _TIMING: dict[int, tuple[int, int, int, int]] = {
 # mode scales the timing template and gates active probing
 # (concurrency_factor, allows_active_probes, detect_risk)
 _MODE: dict[ScanMode, tuple[float, bool, int]] = {
-    ScanMode.PASSIVE: (0.0, False, 0),
     ScanMode.STEALTH: (0.25, True, 2),
     ScanMode.NORMAL: (1.0, True, 5),
     ScanMode.AGGRESSIVE: (2.0, True, 9),
@@ -59,7 +58,7 @@ class StealthBudget:
         base_conc, base_delay, base_timeout, base_retries = timing
         conc_factor, mode_allows, mode_risk = _MODE[cfg.mode]
 
-        # explicit --max-detect-risk 0 forces passive regardless of mode
+        # explicit --max-detect-risk 0 forbids active probes regardless of mode
         risk = cfg.max_detect_risk if cfg.max_detect_risk is not None else mode_risk
         allow_active = mode_allows and risk > 0
 

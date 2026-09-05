@@ -32,9 +32,9 @@ def test_pick_port_none_without_ports():
 
 
 @pytest.mark.asyncio
-async def test_fingerprint_noop_in_passive():
+async def test_fingerprint_noop_when_budget_forbids_active():
     fp = ClockSkewFingerprinter()
-    ctx = make_ctx(budget=make_budget(mode=ScanMode.PASSIVE, timing=0))
+    ctx = make_ctx(budget=make_budget(mode=ScanMode.NORMAL, timing=0, max_detect_risk=0))
     host = make_host(ports=[443])
     await fp.fingerprint(host, ctx)
     assert "clock_skew_cat" not in host.names

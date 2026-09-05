@@ -138,15 +138,15 @@ def test_open_ports_are_marked_confirmed_and_packets_were_sent(loopback_scope, t
     assert data["stats"]["packets_sent"] > 0
 
 
-def test_passive_mode_sends_zero_packets_and_claims_no_ports(loopback_scope, tmp_path):
-    """Passive mode must not probe, even with a live listener sitting there."""
-    out = tmp_path / "passive.json"
+def test_zero_risk_sends_zero_packets_and_claims_no_ports(loopback_scope, tmp_path):
+    """max-detect-risk 0 must not probe, even with a live listener sitting there."""
+    out = tmp_path / "zero.json"
     with listeners(1) as bound:
         result = runner.invoke(
             app,
             [
-                "127.0.0.1", "--mode", "passive", "--no-fingerprint", "--sniff-timeout", "0.5",
-                "--ports", str(bound[0]),
+                "127.0.0.1", "--max-detect-risk", "0", "--no-fingerprint",
+                "--engine", "python", "--ports", str(bound[0]),
                 "--scope", loopback_scope, "--silent", "--json", str(out),
             ],
         )
@@ -198,7 +198,6 @@ async def test_llm_findings_are_capped_after_every_analysis_pass(monkeypatch, lo
     cfg = ScanConfig(
         targets=["127.0.0.1"], mode=ScanMode.NORMAL, ports=[closed_port()],
         fingerprint=False, plugins=True, silent=True, scope_file=loopback_scope,
-        sniff_timeout=0.5,
     )
     guard = ScopeGuard.from_file(loopback_scope, audit=AuditLog(None))
     result = await _run_pipeline(

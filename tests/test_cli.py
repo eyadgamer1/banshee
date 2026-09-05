@@ -1,7 +1,7 @@
 """CLI surface — flag wiring, scope enforcement, output, exit codes.
 
-All invocations use --dry-run so no packets are sent and the passive sniffer is
-skipped (keeps the suite fast and fully offline).
+All invocations use --dry-run so no packets are sent (keeps the suite fast and
+fully offline).
 """
 
 from __future__ import annotations

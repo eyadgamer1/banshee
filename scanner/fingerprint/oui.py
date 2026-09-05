@@ -3,7 +3,7 @@
 Resolves a host's MAC from the local ARP cache (no packets — reads the OS table)
 and maps its 24-bit OUI prefix to a hardware vendor via a built-in IEEE table.
 Only hosts on the local L2 segment have an ARP entry; everything else simply
-yields no vendor. Being read-only, this runs in every mode including PASSIVE.
+yields no vendor. Being read-only, this runs in every mode and even at max-detect-risk 0.
 """
 
 from __future__ import annotations

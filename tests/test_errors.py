@@ -56,11 +56,6 @@ def test_malformed_scope_file_is_clean_error(tmp_path):
     assert "Traceback" not in r.output
 
 
-def test_missing_pcap_is_rejected(scope, tmp_path):
-    r = _run(["127.0.0.1", "--pcap", str(tmp_path / "nope.pcap"), "--scope", scope])
-    assert r.exit_code == 2, r.output
-
-
 def test_unwritable_output_path_is_clean_error(scope, tmp_path):
     # A directory is not a writable report path: clean exit 1, never a traceback.
     r = _run(["127.0.0.1", "-p", "135", "--scope", scope, "--json", str(tmp_path)])

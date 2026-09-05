@@ -12,14 +12,13 @@ def budget(**kw):
     return StealthBudget.from_config(ScanConfig(**kw))
 
 
-def test_passive_mode_forbids_active_probes():
-    b = budget(mode=ScanMode.PASSIVE)
+def test_zero_risk_forbids_active_probes():
+    b = budget(mode=ScanMode.NORMAL, max_detect_risk=0)
     assert b.allow_active_probes is False
     assert b.can_send() is False
-    assert b.concurrency == 0
 
 
-def test_max_detect_risk_zero_forces_passive_even_in_aggressive():
+def test_max_detect_risk_zero_forbids_active_even_in_aggressive():
     b = budget(mode=ScanMode.AGGRESSIVE, max_detect_risk=0)
     assert b.allow_active_probes is False
     assert b.can_send() is False
@@ -82,6 +81,6 @@ async def test_throttle_counts_packets():
 
 
 def test_make_semaphore_minimum_one():
-    b = budget(mode=ScanMode.PASSIVE)  # concurrency 0
+    b = budget(mode=ScanMode.STEALTH, timing=0)  # lowest concurrency
     sem = b.make_semaphore()
     assert sem._value >= 1  # never a deadlocking zero-permit semaphore

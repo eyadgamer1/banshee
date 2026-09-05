@@ -243,7 +243,7 @@ class ScanEngine:
         """Fold a duplicate discovery of the same IP into the existing host.
 
         Services and findings are de-duplicated so that two discoverers seeing the
-        same IP (e.g. the passive sniffer and the TCP sweep both reporting :80) do
+        same IP (e.g. the ICMP ping and the TCP sweep both reporting :80) do
         not inflate service/finding counts or list a port twice.
         """
         if other.state == HostState.UP:
