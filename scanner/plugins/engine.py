@@ -75,6 +75,17 @@ def load_rules(plugin_dir: Path) -> list[dict[str, Any]]:
     return rules
 
 
+def _safe_search(pattern: str, text: str) -> bool:
+    """`re.search(pattern, text, re.I)`, but a malformed pattern in a
+    user-authored plugin YAML rule fails this one rule's match instead of
+    crashing the whole scan with an unhandled `re.error`."""
+    try:
+        return re.search(pattern, text, re.I) is not None
+    except re.error as exc:
+        log.warning("plugin rule: invalid regex %r ignored (%s)", pattern, exc)
+        return False
+
+
 def _matches(host: Host, match: dict[str, Any]) -> bool:
     """Return True if host satisfies all conditions in the match block."""
     # Port match (ANY)
@@ -85,19 +96,19 @@ def _matches(host: Host, match: dict[str, Any]) -> bool:
     # Device type regex
     dt_pattern = match.get("device_type")
     if dt_pattern:
-        if not host.device_type or not re.search(dt_pattern, host.device_type, re.I):
+        if not host.device_type or not _safe_search(dt_pattern, host.device_type):
             return False
 
     # Hostname regex
     hn_pattern = match.get("hostname_regex")
     if hn_pattern:
-        if not host.hostname or not re.search(hn_pattern, host.hostname, re.I):
+        if not host.hostname or not _safe_search(hn_pattern, host.hostname):
             return False
 
     # OS regex
     os_pattern = match.get("os_regex")
     if os_pattern:
-        if not host.os_guess or not re.search(os_pattern, host.os_guess, re.I):
+        if not host.os_guess or not _safe_search(os_pattern, host.os_guess):
             return False
 
     return True

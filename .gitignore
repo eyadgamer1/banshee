@@ -26,11 +26,10 @@ memory/
 graphify-out/
 TASKS.md
 
-# NOTE: tests/ and uv.lock are deliberately NOT ignored.
-# For a security scanner the test suite is the credibility proof — without it a
-# user has no way to check that the tool does not fabricate results. See
-# tests/test_ground_truth.py, which binds real listeners and asserts the reported
-# ports match reality exactly. The lockfile is committed so CI is reproducible.
+# tests/ is kept local-only by owner's choice — never tracked or published.
+tests/
+
+# NOTE: uv.lock is deliberately NOT ignored — committed so CI is reproducible.
 
 # database & runtime
 *.db

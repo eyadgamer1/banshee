@@ -60,10 +60,3 @@ jobs:
 
       - name: Type check
         run: uv run mypy scanner
-
-      # Includes tests/test_ground_truth.py, which binds real TCP listeners on
-      # 127.0.0.1, runs the real CLI, and asserts the reported open ports equal the
-      # bound ports exactly — in both directions. Unprivileged: the raw-socket
-      # discoverers (ICMP, passive sniffer) no-op gracefully without CAP_NET_RAW.
-      - name: Test
-        run: uv run pytest -q

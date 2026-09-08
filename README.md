@@ -531,26 +531,16 @@ With a restrictive scope, anything not on the list is refused with **exit code 3
 
 The most dangerous thing a security scanner can do is lie — report a port that is not open, or a finding that is not there. BANSHEE is built so that cannot happen quietly, and it ships the proof.
 
-**The guarantee:** a service is reported open **only** as the direct record of a socket that actually opened. Open ports are graded `CONFIRMED`; an inference is at most `PROBABLE`; anything an LLM suggests is capped at `POTENTIAL` and can never be promoted.
+**The guarantee:** a service is reported open **only** as the direct record of a socket that actually opened. Open ports are graded `CONFIRMED`; an inference is at most `PROBABLE`; anything an LLM suggests is capped at `POTENTIAL` and can never be promoted — see `scanner/risk/__init__.py`, which is the final authority on every confidence tier in a report.
 
-**Run the proof yourself.** The ground-truth suite binds real listeners on loopback, runs the real CLI, and asserts the reported open ports equal the bound ports *exactly* — including the negative direction, that an unbound port is never reported open, and that `--dry-run` sends zero packets:
+**Verify it yourself.** Point BANSHEE at a host you control and bind a listener on a port you know is closed, then a port you know is open, and compare:
 
 ```bash
-uv run pytest tests/test_ground_truth.py -v
+python3 -m http.server 8123 &        # something real and open
+banshee 127.0.0.1 -p 8123,8124       # 8123 open, 8124 closed — the report must match exactly
 ```
 
-```
-10 passed
-```
-
-The full suite (314 tests) proves the hard cases against reality on loopback:
-cross-engine **parity** (Python and Go agree port-for-port), **UDP ground
-truth** — a replying UDP port is reported `open`, a silent one is `open|filtered`
-and *never* a fake "open" — and **service-version honesty**, that `-sV` extracts a
-product/version only from a real banner and invents nothing for a silent port. The
-Go engine carries its own ground-truth tests (`cd engine && go test ./...`).
-Everything runs on every push via CI on Linux and Windows — including the Go build,
-so the parity, UDP and `-sV` tests execute, not skip.
+The Go engine carries its own test suite (`cd engine && go test ./...`), run on every push via CI on Linux and Windows alongside `go vet`, `ruff check`, and `mypy --strict`.
 
 ---
 

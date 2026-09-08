@@ -127,7 +127,11 @@ def _probe_sync(ip: str, port: int) -> float | None:
             if ans is None or not ans.haslayer(TCP):
                 return t_recv, None
             tcp_layer = ans[TCP]
-            if tcp_layer.flags & 0x04:  # RST — no TSval in RST
+            # Require SYN+ACK (0x12) explicitly — not just "not a RST". A RST
+            # or any other stray packet scapy happens to pair with this probe
+            # must not be read as a real handshake response with a trustworthy
+            # TSval; excluding only RST let anything else through.
+            if int(tcp_layer.flags) & 0x12 != 0x12:
                 return t_recv, None
             for opt_name, opt_val in (tcp_layer.options or []):
                 if opt_name == "Timestamp":

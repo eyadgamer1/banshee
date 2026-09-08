@@ -108,6 +108,12 @@ def parse_ports(spec: str) -> list[int]:
             lo, hi = int(lo_s), int(hi_s)
             if lo > hi:
                 raise ValueError(f"reversed port range: {chunk}")
+            # Bounds-check before materializing the range: a huge hi (e.g. a
+            # typo'd extra digit) would otherwise build a list with billions of
+            # entries before the bounds loop below ever runs — trivial CLI-arg
+            # memory-exhaustion DoS.
+            if not 1 <= lo <= 65535 or not 1 <= hi <= 65535:
+                raise ValueError(f"port out of range: {chunk}")
             ports.extend(range(lo, hi + 1))
         else:
             ports.append(int(chunk))

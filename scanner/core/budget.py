@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from scanner.core.models import ScanConfig, ScanMode
 
@@ -51,6 +51,7 @@ class StealthBudget:
 
     _sent: int = 0
     _last_send: float = 0.0
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @classmethod
     def from_config(cls, cfg: ScanConfig) -> StealthBudget:
@@ -101,17 +102,26 @@ class StealthBudget:
         """Await the inter-probe delay and per-second rate cap, then count a packet.
 
         Callers MUST check `can_send()` first. Passive mode never reaches here.
+
+        Serialized under a lock: many probes run concurrently (bounded by
+        `make_semaphore()`), and reading `_last_send`, sleeping, then writing it
+        back without a lock lets several callers read the same stale timestamp
+        and wake near-simultaneously — the configured delay/rate cap would only
+        bind the first sender, not the group. Holding the lock across the sleep
+        is deliberate: it is what actually enforces a shared minimum gap between
+        *any* two sends, not just same-caller ones.
         """
-        now = time.monotonic()
-        min_gap = self.delay_ms / 1000.0
-        if self.rate_pps:
-            min_gap = max(min_gap, 1.0 / self.rate_pps)
-        if self._last_send and min_gap:
-            wait = min_gap - (now - self._last_send)
-            if wait > 0:
-                await asyncio.sleep(wait)
-        self._last_send = time.monotonic()
-        self._sent += 1
+        async with self._lock:
+            now = time.monotonic()
+            min_gap = self.delay_ms / 1000.0
+            if self.rate_pps:
+                min_gap = max(min_gap, 1.0 / self.rate_pps)
+            if self._last_send and min_gap:
+                wait = min_gap - (now - self._last_send)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+            self._last_send = time.monotonic()
+            self._sent += 1
 
     def make_semaphore(self) -> asyncio.Semaphore:
         return asyncio.Semaphore(max(1, self.concurrency))

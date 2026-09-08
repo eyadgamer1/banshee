@@ -145,14 +145,20 @@ func (e *Engine) Run(ctx context.Context, targets []string) (*model.Result, erro
 			defer wg.Done()
 			defer func() { <-hostSlot }()
 			host, steps, verdict := e.scanHost(ctx, ip)
-			if host == nil {
-				return
-			}
+			// A down/filtered host still consumed real probes and detection-risk
+			// budget under adaptive mode — record steps/verdict for it too, or
+			// the audit trail (Stats.PacketsSent vs Plan.Steps) silently disagrees
+			// with what was actually sent on the wire. Only the *host* entry
+			// itself is conditional on having answered.
 			mu.Lock()
-			hosts = append(hosts, *host)
+			if host != nil {
+				hosts = append(hosts, *host)
+			}
 			if e.opts.Adaptive {
 				plan.Steps = append(plan.Steps, steps...)
-				plan.Verdicts = append(plan.Verdicts, verdict)
+				if verdict.IP != "" { // empty verdict: host never answered, nothing to classify
+					plan.Verdicts = append(plan.Verdicts, verdict)
+				}
 			}
 			mu.Unlock()
 		}(ip)
@@ -164,7 +170,7 @@ func (e *Engine) Run(ctx context.Context, targets []string) (*model.Result, erro
 		hosts = []model.Host{} // empty active scan: keep "hosts":[] on the wire
 	}
 	res.Hosts = hosts
-	e.fillStats(res, plan)
+	e.fillStats(res, plan, len(inScope))
 
 	fin := time.Now().UTC()
 	res.FinishedAt = &fin
@@ -255,7 +261,13 @@ func (e *Engine) scanHost(ctx context.Context, ip string) (*model.Host, []model.
 	}
 
 	if !answered {
-		return nil, nil, model.HostVerdict{}
+		// Real probes were still sent and counted against the detection-risk
+		// budget (see the adaptive loop above) even though nothing answered —
+		// return the accumulated steps so the audit trail (Plan.Steps vs
+		// Stats.PacketsSent) doesn't silently disagree with what was actually
+		// sent on the wire. No verdict: classifying a host that never
+		// responded would assert a device class from no real evidence.
+		return nil, steps, model.HostVerdict{}
 	}
 
 	sort.Slice(host.Services, func(i, j int) bool { return host.Services[i].Port < host.Services[j].Port })
@@ -380,7 +392,12 @@ func serviceName(proto string, port int) string {
 	return wellKnown[port]
 }
 
-func (e *Engine) fillStats(res *model.Result, plan *model.PlanReport) {
+// attempted is the count of in-scope hosts actually probed (not just those
+// that answered) — ProbesPlanned/RiskOfFullScan must scale by what a full
+// scan would have cost against everything attempted, or a down/filtered
+// target silently shrinks the "probes saved" denominator and overstates the
+// adaptive planner's savings.
+func (e *Engine) fillStats(res *model.Result, plan *model.PlanReport, attempted int) {
 	res.Stats.HostsUp = len(res.Hosts)
 	for _, h := range res.Hosts {
 		res.Stats.ServicesFound += len(h.Services)
@@ -400,8 +417,8 @@ func (e *Engine) fillStats(res *model.Result, plan *model.PlanReport) {
 	sort.Slice(plan.Verdicts, func(i, j int) bool { return lessIP(plan.Verdicts[i].IP, plan.Verdicts[j].IP) })
 	plan.ProbesSent = len(plan.Steps)
 	full := adaptive.New(e.opts.PerHostProbe).FullRisk()
-	perHostFull := full * float64(len(res.Hosts))
-	plan.ProbesPlanned = len(adaptive.New(e.opts.PerHostProbe).Candidates()) * len(res.Hosts)
+	perHostFull := full * float64(attempted)
+	plan.ProbesPlanned = len(adaptive.New(e.opts.PerHostProbe).Candidates()) * attempted
 	plan.ProbesSaved = plan.ProbesPlanned - plan.ProbesSent
 	plan.RiskOfFullScan = round(perHostFull)
 	var spent float64

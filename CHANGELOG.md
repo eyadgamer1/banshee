@@ -1,5 +1,70 @@
 # Changelog
 
+## [1.10.0] — 2026-09-08
+
+Active-only pivot completed; accuracy, CLI, and install work; a 5-agent bug sweep.
+
+### Fixed
+
+- **Regression from the active-only pivot** (deleted `--sniff-timeout`/`--pcap`):
+  completed the pivot rather than reverting it — BANSHEE is active-scan only, no
+  passive sniffing or pcap replay.
+- **`-sV` graded a generic banner match the same as a named signature.** A
+  match-only fallback regex (weak, spoofable) was reported `CONFIRMED` exactly
+  like a named product signature. Now `PROBABLE` unless the signature is specific.
+- **Weak passive banners under `-sV` never got a disambiguating active probe**
+  unless the banner was completely empty. Now any non-identifying banner triggers
+  the follow-up probe.
+- **Device classification used bare argmax with no confidence floor.** A weak
+  tie between contradicting signals silently asserted a label as fact. Now
+  softmax-scored with a confidence floor; below it, honestly reports "unknown".
+- **`-p-`/`--ports all` crashed on Windows** (`WinError 206`, command-line too
+  long) by exploding a large port range into one argument per port. Now
+  compacted to nmap-style ranges before reaching the Go engine.
+- **`parse_ports` memory-exhaustion DoS**: a huge port range (e.g. a typo'd
+  extra digit) was materialized into a list before bounds-checking. Now
+  bounds-checked first.
+- **A malformed plugin-rule regex crashed the whole scan** (`re.error`
+  uncaught). Now the one bad rule is skipped with a warning.
+- **Host identity confidence double-counted a derived signal**: a MAC and its
+  vendor (looked up *from* that MAC) counted as two independent signals,
+  reaching `CONFIRMED` off one real fact. Now counted as one.
+- **EPSS/KEV enrichment could escalate severity from a CVE ID merely mentioned
+  in a finding's free text**, regardless of whether it actually applied. Now
+  requires the finding already be at least `PROBABLE`.
+- **`StealthBudget.throttle()` had no lock**, so concurrent probes could read
+  the same stale timestamp and exceed the configured rate/delay cap. Now
+  serialized.
+- **TCP/IP OS fingerprinting and clock-skew probes didn't verify SYN+ACK**
+  before trusting the response's TTL/window/timestamp — a stray non-handshake
+  packet could produce a wrong OS guess or skew reading.
+- **Go adaptive-mode audit trail silently dropped probes sent to hosts that
+  never answered**, understating `Stats.PacketsSent` vs `Plan.Steps` and
+  overstating the planner's reported savings. Now every attempted probe is
+  recorded; `ProbesPlanned`/`RiskOfFullScan` scale by hosts attempted, not just
+  hosts that answered.
+
+### Added
+
+- `-p-` / `--ports all` — every port, 1-65535, nmap-style.
+- `--help` now shows a common flag surface only; `--help-advanced` reveals the
+  rest — same flags, fewer shown by default.
+- `quick` / `pro` / `stealth` preset subcommands — thin argv-prefix wrappers
+  around `scan`, no duplicated logic.
+- `-i`/`--iface` now auto re-execs through the OS's own `sudo`/UAC prompt when
+  raw-socket privilege is missing, instead of silently degrading with no
+  signal. Never a BANSHEE-owned password prompt.
+- `install.sh` now fetches the Go engine by default right after the Python
+  install (`--no-go` to skip) — one command, both engines ready.
+
+### Changed
+
+- Terminal dashboard default output is leaner: the adaptive-plan audit table
+  moved behind `-v`. Findings stay unconditional — they're the deliverable.
+- README consolidated to one TL;DR install path with per-OS notes collapsed
+  into a details block; de-passive documentation pass throughout.
+- `tests/` is no longer published in this repository (kept local-only).
+
 ## [1.9.1] — 2026-08-29
 
 ### Fixed

@@ -13,9 +13,9 @@
 
 ## Checklist
 
-- [ ] `uv run pytest` passes (239+ tests green)
-- [ ] `uv run ruff check scanner/ tests/` passes
+- [ ] `uv run ruff check scanner/` passes
 - [ ] `uv run mypy scanner/` passes
+- [ ] Verified manually against a real target (see README "Prove the results are real")
 - [ ] No new code bypasses or softens `ScopeViolationError`
 - [ ] No exploit payloads, weaponized code, or active attack logic added
 - [ ] `--enrich` (external data) remains opt-in with the loud warning

@@ -35,11 +35,12 @@ def _has_confirmed_service(host: Host) -> bool:
 
 
 def _identity_signals(host: Host) -> int:
-    """Count independent identity signals: MAC, vendor, any name, any service."""
+    """Count independent identity signals: MAC (vendor is derived from the MAC's
+    OUI, not independent evidence, so it does not count separately), any name,
+    any service."""
     return sum(
         (
             host.mac is not None,
-            host.vendor is not None,
             bool(host.names) or host.hostname is not None,
             bool(host.services),
         )

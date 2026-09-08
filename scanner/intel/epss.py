@@ -116,12 +116,21 @@ async def enrich_result(result: ScanResult) -> None:
     log.info("C4 enriching %d CVEs via EPSS+KEV (data leaves host)", len(cves))
     epss_scores, kev_set = await asyncio.gather(_fetch_epss(cves), _fetch_kev())
 
-    from scanner.core.models import Severity
+    from scanner.core.models import ConfidenceTier, Severity
 
     for host in result.hosts:
         for finding in host.findings:
             cve_ids = _cves_in(finding.title, finding.description, finding.evidence or "")
             if not cve_ids:
+                continue
+            # A CVE ID is extracted from free text (title/description/evidence),
+            # so it may be mentioned narratively rather than actually apply to
+            # this finding (e.g. "not vulnerable to CVE-2021-44228"). Only
+            # escalate severity when the finding itself is already at least
+            # PROBABLE — the same corroboration bar the rest of this project
+            # requires before trusting a signal, and it stops a POTENTIAL/
+            # speculative finding from being amplified into a false CRITICAL.
+            if finding.confidence == ConfidenceTier.POTENTIAL:
                 continue
 
             # Attach highest EPSS score found in this finding

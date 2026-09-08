@@ -103,7 +103,11 @@ class TcpIpFingerprinter:
         try:
             pkt = IP(dst=ip) / TCP(dport=port, flags="S")
             resp = sr1(pkt, timeout=2, verbose=0)
-            if resp and resp.haslayer(TCP):
+            # SYN+ACK only (flags 0x12) — a RST (closed/filtered port) or any
+            # other stray packet scapy happens to pair with this request must
+            # not be fed into the TTL/window -> OS-guess table as if it were a
+            # real handshake response.
+            if resp and resp.haslayer(TCP) and int(resp[TCP].flags) & 0x12 == 0x12:
                 ttl = resp[IP].ttl if resp.haslayer(IP) else 64
                 window = resp[TCP].window
                 # Send RST to clean up
