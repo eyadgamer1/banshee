@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import os
 import re
 import sys
 from contextlib import AsyncExitStack
@@ -300,6 +301,70 @@ def _version_cb(value: bool) -> None:
         raise typer.Exit()
 
 
+def _has_raw_socket_privilege() -> bool:
+    """Coarse admin/root check — enough to decide whether to offer elevation,
+    not a full capability audit. The raw packet socket `--iface` capture needs
+    is gated by root/Administrator on every mainstream OS regardless of finer
+    capability grants (e.g. Linux's unprivileged-ICMP sysctl doesn't cover it —
+    that's a datagram socket, this is a raw one)."""
+    if os.name == "nt":
+        import ctypes
+
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except OSError:
+            return False
+    return os.geteuid() == 0  # type: ignore[attr-defined,no-any-return]
+
+
+def _maybe_elevate(iface: str | None, dry_run: bool, console: Console) -> None:
+    """Auto re-exec through the OS's own sudo/UAC prompt when `--iface` asks
+    for raw-socket capture and this process doesn't already have it.
+
+    Only `--iface` triggers this. ICMP discovery and TLS JA4 fingerprinting
+    already run opportunistically on every scan and degrade gracefully
+    without privilege (see `IcmpPingDiscoverer`/`TlsJa4Fingerprinter` — a
+    `PermissionError` there is caught and logged, not raised) — treating their
+    mere presence in the pipeline as "needs elevation" would prompt for sudo
+    on every ordinary scan, exactly the blanket-privilege default this
+    project rejects. `--iface` is the one flag that is an explicit,
+    unambiguous request for privileged capture.
+
+    `--dry-run` never elevates (zero packets sent, nothing for a raw socket to
+    do); a process that already has the privilege never re-execs (no loop);
+    a declined/failed elevation falls through to an ordinary unprivileged run
+    rather than aborting the scan outright.
+    """
+    if dry_run or iface is None or _has_raw_socket_privilege():
+        return
+    console.print(
+        "[yellow][!][/yellow] --iface needs raw-socket access; re-launching with elevation..."
+    )
+    argv = sys.argv[1:]
+    if os.name == "nt":
+        import ctypes
+        import subprocess as sp
+
+        params = sp.list2cmdline(["-m", "scanner.cli", *argv])
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, params, None, 1
+        )
+        if ret <= 32:  # UAC declined or failed — fall through, run unprivileged
+            console.print(
+                "[yellow]note:[/yellow] elevation was declined or failed; "
+                "continuing without raw-socket privilege."
+            )
+            return
+        raise typer.Exit(code=0)
+    try:
+        os.execvp("sudo", ["sudo", sys.executable, "-m", "scanner.cli", *argv])
+    except OSError as exc:
+        console.print(
+            f"[yellow]note:[/yellow] could not re-exec via sudo ({exc}); "
+            "continuing without raw-socket privilege."
+        )
+
+
 @app.command()
 def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     targets: Annotated[
@@ -561,6 +626,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     logging.basicConfig(level=log_level, format="%(levelname)s %(name)s: %(message)s")
 
     console = Console(no_color=no_color, stderr=False)
+    _maybe_elevate(iface, dry_run, console)
     print_banner(console, quiet=quiet, silent=silent)
 
     if not targets:

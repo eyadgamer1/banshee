@@ -30,7 +30,7 @@
 
 - [What is BANSHEE?](#what-is-banshee)
 - [Why it's different](#why-its-different)
-- [Install](#install) — [Kali](#kali--parrot--debian--ubuntu) · [Windows](#windows) · [macOS](#macos) · [Docker](#docker) · [From source](#from-source--go-engine)
+- [Install](#install) — one line, both engines; OS-specific notes and [from source](#from-source--go-engine) inside
 - [Quick start](#quick-start)
 - [The live interface](#the-live-interface)
 - [Command reference](#command-reference) — every flag
@@ -73,96 +73,73 @@ It is built for ethical hackers and defenders who care about two things most sca
 
 ## Install
 
-**TL;DR — one line, any OS** (needs [`uv`](https://github.com/astral-sh/uv); [install uv](https://github.com/astral-sh/uv#installation) first if you don't have it):
+**TL;DR — one line, any OS, both engines ready** (needs [`uv`](https://github.com/astral-sh/uv); [install uv](https://github.com/astral-sh/uv#installation) first if you don't have it):
 
 ```bash
 uv tool install git+https://github.com/eyadgamer1/banshee
+banshee install-engine   # fetches the fast Go engine — skip with --no-go below
 banshee --help
 ```
 
 That's the whole install — a single self-contained `banshee` command with a
-built-in default scope. No clone, no config, no Go toolchain (the fast Go engine
-is optional; see [below](#from-source--go-engine)). Per-OS details and `pipx`/`pip`
-alternatives follow.
+built-in default scope, Python and Go set up together in one atomic sequence
+("two faces of one coin," not a separate optional step). No clone, no config.
+If the Go fetch fails (offline, unsupported platform) `banshee` still works
+fully via `--engine python`; nothing above is fatal to the install.
 
-> **Requirements:** Python **3.12+**. The active TCP-connect sweep needs **no privileges**. ICMP discovery and raw-socket fingerprinting (`-i`/`--iface`, TLS JA4) need **`sudo`** on Linux/macOS or **[Npcap](https://npcap.com)** on Windows.
-
-The fastest path on every OS is [`uv`](https://github.com/astral-sh/uv). `pipx` (isolated) and `pip` also work.
-
-### Kali / Parrot / Debian / Ubuntu
-
-```bash
-# 1. Install uv (one line, no root needed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"   # put uv on PATH now — do NOT run `exec $SHELL` here; it replaces the shell and aborts the rest of this block
-
-# 2. Install BANSHEE as a global tool
-uv tool install git+https://github.com/eyadgamer1/banshee
-uv tool update-shell                    # keep `banshee` on PATH in future terminals
-
-# 3. Verify
-banshee --version
-banshee --help
-```
-
-> **`banshee: command not found` right after install?** The `banshee` binary is in `~/.local/bin`, which isn't on your `PATH` yet in this shell. Run `uv tool update-shell` then open a new terminal — or, just for the current shell, `export PATH="$HOME/.local/bin:$PATH"`.
+> **Requirements:** Python **3.12+**. The active TCP-connect sweep needs **no privileges** and never prompts for one. Raw-socket fingerprinting (`-i`/`--iface`, TLS JA4) auto-elevates through your OS's own **`sudo`** (Linux/macOS) or **UAC** (Windows) prompt the moment you pass `-i` — never a BANSHEE-owned password field. Windows also needs **[Npcap](https://npcap.com)** (WinPcap-compatible mode) for that capture to actually work once elevated.
 
 <details>
-<summary>Prefer <code>pipx</code>, or one-line installer?</summary>
+<summary><b>OS-specific notes</b> — Kali/Debian/Ubuntu, Windows, macOS, Docker, <code>pipx</code>/<code>pip</code>, from source</summary>
+
+**Kali / Parrot / Debian / Ubuntu**
 
 ```bash
-# pipx (isolated venv)
-sudo apt update && sudo apt install -y pipx
-pipx install git+https://github.com/eyadgamer1/banshee
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"   # do NOT run `exec $SHELL` here; it replaces the shell
+uv tool install git+https://github.com/eyadgamer1/banshee
+uv tool update-shell                    # keep `banshee` on PATH in future terminals
+banshee install-engine
+```
 
-# or the one-line installer (auto-detects uv / pipx / pip)
+> **`banshee: command not found`?** Run `uv tool update-shell` then open a new terminal, or `export PATH="$HOME/.local/bin:$PATH"` for the current shell.
+
+```bash
+# pipx (isolated venv), or the one-line installer (auto-detects uv/pipx/pip,
+# bundles the Go engine by default — pass --no-go to skip it):
+sudo apt update && sudo apt install -y pipx && pipx install git+https://github.com/eyadgamer1/banshee
 curl -sSL https://raw.githubusercontent.com/eyadgamer1/banshee/main/install.sh | bash
 ```
-</details>
 
-Raw-socket fingerprinting on an interface (`-i`/`--iface`, TLS JA4) needs raw sockets, so prefix those runs with `sudo`:
-
-```bash
-sudo $(command -v banshee) 10.0.0.0/24 -i eth0
-```
-
-### Windows
+**Windows**
 
 ```powershell
-# 1. Install uv
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-# 2. Install BANSHEE
 uv tool install git+https://github.com/eyadgamer1/banshee
-
-# 3. Run
-banshee --help
+banshee install-engine
 banshee 192.168.1.0/24 --mode normal
 ```
 
-The active TCP-connect sweep works out of the box. **Raw-socket fingerprinting on Windows requires [Npcap](https://npcap.com)** (install with "WinPcap API-compatible mode"). The banner renders on any console — it falls back to plain ASCII on legacy code pages automatically.
+The active TCP-connect sweep works out of the box. Raw-socket fingerprinting needs [Npcap](https://npcap.com) (WinPcap-compatible mode) — BANSHEE re-launches itself through the UAC prompt automatically the moment `-i` is passed. The banner falls back to plain ASCII on legacy code pages automatically.
 
-### macOS
+**macOS**
 
 ```bash
 brew install uv                    # or: brew install pipx
 uv tool install git+https://github.com/eyadgamer1/banshee
-banshee --help
-
-# raw-socket features (-i/--iface fingerprinting, ICMP discovery) need sudo:
-sudo $(command -v banshee) 10.0.0.0/24 -i en0
+banshee install-engine
 ```
 
-### Docker
+**Docker**
 
-Raw packet capture inside a container needs `NET_RAW`/`NET_ADMIN` and host networking. The provided `docker-compose.yml` sets both.
+Raw packet capture inside a container needs `NET_RAW`/`NET_ADMIN` and host networking (the provided `docker-compose.yml` sets both) — auto-elevation does not apply inside a container, so run the container itself with those capabilities instead.
 
 ```bash
 git clone https://github.com/eyadgamer1/banshee && cd banshee
-
-# mount your own scope.yaml + collect output locally
 docker compose run --rm banshee 192.168.1.0/24 --mode normal -T3 --html /app/output/report.html
 ```
+
+</details>
 
 ### From source + Go engine
 
@@ -652,7 +629,7 @@ alone, so an ordinary web+SSH server is left untouched.
 | `--udp and --adaptive are mutually exclusive` | Pick one: UDP scan **or** the TCP adaptive planner. |
 | UDP scan shows lots of `open\|filtered` | Working as intended — that's an honest "can't tell open from filtered", not a bug. A firewall dropping UDP looks identical to a silent open service; only a reply proves `open`. |
 | `-i`/`--iface` finds nothing on Windows | Install [Npcap](https://npcap.com) in WinPcap-compatible mode. Raw-socket fingerprinting needs a packet driver. |
-| `Operation not permitted` on `-i` / ICMP | Raw sockets need privileges — run with `sudo` (Linux/macOS) or as Administrator (Windows). The active TCP/UDP sweep does not. |
+| `Operation not permitted` on `-i` / ICMP | Raw sockets need privileges. `-i`/`--iface` auto-re-launches through `sudo`/UAC — if that was declined or failed, it falls back to running unprivileged rather than erroring out (JA4 capture just won't fire). The active TCP/UDP sweep and plain ICMP never need privilege at all. |
 | Garbled banner on an old terminal | Harmless — BANSHEE auto-falls back to an ASCII banner when the console can't render block glyphs. |
 | `--agentic` does nothing | It needs a local [Ollama](https://ollama.com) server with a pulled model. |
 
