@@ -87,9 +87,16 @@ def _target_is_valid(token: str) -> bool:
 def parse_ports(spec: str) -> list[int]:
     """Parse an nmap-style port spec: "22,80,443" or "1-1024" or a mix of both.
 
+    "-" or "all" (either alone, case-insensitive) means every port, 1-65535 —
+    the nmap "-p-" convention, so scanning every port doesn't require spelling
+    out the range by hand.
+
     Raises ValueError on anything unparseable so the CLI can refuse the run
     rather than silently scanning a different port set than the operator asked for.
     """
+    stripped = spec.strip().lower()
+    if stripped in ("-", "all"):
+        return list(range(1, 65536))
     ports: list[int] = []
     for chunk in spec.split(","):
         chunk = chunk.strip()
@@ -234,6 +241,27 @@ _ENGINE = "Engine"
 
 _ENGINE_CHOICES = ("python", "go", "auto")
 
+# Computed once at import time from the real argv, not per-Option-call: Typer
+# builds each Option's `hidden` flag when the decorator runs (module load), so
+# this must be settled before the `scan` function below is defined. A plain
+# `banshee --help` shows only the common surface; `--help-advanced` reveals the
+# rest by flipping every advanced Option's `hidden` to False before Click ever
+# renders help — same options, same behavior, just fewer shown by default.
+_SHOW_ADVANCED = "--help-advanced" in sys.argv
+
+
+def _help_advanced_cb(ctx: typer.Context, value: bool) -> None:
+    """Print full help (common + advanced options) and exit.
+
+    Mirrors Click's own `--help` callback (`echo(ctx.get_help()); ctx.exit()`)
+    rather than duplicating the option list by hand — the advanced options are
+    already part of this same command, just `hidden` until this flag flips them
+    visible at decoration time (see `_SHOW_ADVANCED` above).
+    """
+    if value:
+        Console().print(ctx.get_help())
+        raise typer.Exit()
+
 # The default scope path is relative to the working directory. When BANSHEE is
 # installed as a tool (uv tool / pipx / pip) and run from an arbitrary directory,
 # that file will not exist — so we fall back to a copy shipped inside the package.
@@ -284,7 +312,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     ] = None,
     iface: Annotated[
         str | None,
-        typer.Option("--iface", "-i", rich_help_panel=_TARGETS,
+        typer.Option("--iface", "-i", rich_help_panel=_TARGETS, hidden=not _SHOW_ADVANCED,
                      help="capture NIC for raw-socket fingerprinting (e.g. TLS JA4)"),
     ] = None,
     ports: Annotated[
@@ -292,7 +320,8 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         typer.Option(
             "--ports",
             "-p",
-            help="ports to probe, e.g. 22,80,443 or 1-1024 (default: common set)",
+            help="ports to probe, e.g. 22,80,443 or 1-1024; '-' or 'all' = every "
+            "port 1-65535 (default: common set)",
             rich_help_panel=_TARGETS,
         ),
     ] = None,
@@ -305,13 +334,16 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     ] = False,
     silent: Annotated[
         bool,
-        typer.Option("--silent", help="no terminal output (files only)", rich_help_panel=_VERB),
+        typer.Option("--silent", help="no terminal output (files only)", rich_help_panel=_VERB,
+                     hidden=not _SHOW_ADVANCED),
     ] = False,
     debug: Annotated[
-        bool, typer.Option("--debug", help="debug tracing", rich_help_panel=_VERB)
+        bool, typer.Option("--debug", help="debug tracing", rich_help_panel=_VERB,
+                            hidden=not _SHOW_ADVANCED)
     ] = False,
     no_color: Annotated[
-        bool, typer.Option("--no-color", help="disable ANSI color", rich_help_panel=_VERB)
+        bool, typer.Option("--no-color", help="disable ANSI color", rich_help_panel=_VERB,
+                            hidden=not _SHOW_ADVANCED)
     ] = False,
     # --- intensity dial ---
     mode: Annotated[
@@ -327,26 +359,27 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     rate: Annotated[
         int | None,
         typer.Option("--rate", min=0, help="max packets/sec (0 = template default)",
-                     rich_help_panel=_INTENS),
+                     rich_help_panel=_INTENS, hidden=not _SHOW_ADVANCED),
     ] = None,
     timeout: Annotated[
         int | None,
         typer.Option("--timeout", min=1, help="probe timeout ms (default from -T)",
-                     rich_help_panel=_INTENS),
+                     rich_help_panel=_INTENS, hidden=not _SHOW_ADVANCED),
     ] = None,
     retries: Annotated[
         int | None,
         typer.Option("--retries", min=0, help="probe retries (default from -T)",
-                     rich_help_panel=_INTENS),
+                     rich_help_panel=_INTENS, hidden=not _SHOW_ADVANCED),
     ] = None,
     threads: Annotated[
         int | None,
-        typer.Option("--threads", min=1, help="max concurrency", rich_help_panel=_INTENS),
+        typer.Option("--threads", min=1, help="max concurrency", rich_help_panel=_INTENS,
+                     hidden=not _SHOW_ADVANCED),
     ] = None,
     max_detect_risk: Annotated[
         int | None,
         typer.Option("--max-detect-risk", min=0, max=10, help="0=no active probes..10=full",
-                     rich_help_panel=_INTENS),
+                     rich_help_panel=_INTENS, hidden=not _SHOW_ADVANCED),
     ] = None,
     # --- engine ---
     engine: Annotated[
@@ -357,6 +390,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             "automatically on first use, else Python), python (force in-process), "
             "or go (force the fast core).",
             rich_help_panel=_ENGINE,
+            hidden=not _SHOW_ADVANCED,
         ),
     ] = "auto",
     adaptive: Annotated[
@@ -365,6 +399,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             "--adaptive",
             help="Go engine: pick probes by info-gain/risk, stop early (needs --engine go)",
             rich_help_panel=_ENGINE,
+            hidden=not _SHOW_ADVANCED,
         ),
     ] = False,
     udp: Annotated[
@@ -373,6 +408,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             "--udp",
             help="Go engine: UDP scan; silent ports report open|filtered (needs --engine go)",
             rich_help_panel=_ENGINE,
+            hidden=not _SHOW_ADVANCED,
         ),
     ] = False,
     service_scan: Annotated[
@@ -386,36 +422,43 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     ] = False,
     # --- output files ---
     out_txt: Annotated[
-        str | None, typer.Option("--txt", help="write text report", rich_help_panel=_OUTPUT)
+        str | None, typer.Option("--txt", help="write text report", rich_help_panel=_OUTPUT,
+                                  hidden=not _SHOW_ADVANCED)
     ] = None,
     out_json: Annotated[
         str | None, typer.Option("--json", help="write JSON report", rich_help_panel=_OUTPUT)
     ] = None,
     out_xml: Annotated[
-        str | None, typer.Option("--xml", help="write XML report", rich_help_panel=_OUTPUT)
+        str | None, typer.Option("--xml", help="write XML report", rich_help_panel=_OUTPUT,
+                                  hidden=not _SHOW_ADVANCED)
     ] = None,
     out_html: Annotated[
         str | None, typer.Option("--html", help="write HTML report", rich_help_panel=_OUTPUT)
     ] = None,
     out_csv: Annotated[
-        str | None, typer.Option("--csv", help="write CSV report", rich_help_panel=_OUTPUT)
+        str | None, typer.Option("--csv", help="write CSV report", rich_help_panel=_OUTPUT,
+                                  hidden=not _SHOW_ADVANCED)
     ] = None,
     out_sarif: Annotated[
-        str | None, typer.Option("--sarif", help="write SARIF report", rich_help_panel=_OUTPUT)
+        str | None, typer.Option("--sarif", help="write SARIF report", rich_help_panel=_OUTPUT,
+                                  hidden=not _SHOW_ADVANCED)
     ] = None,
     out_all: Annotated[
         str | None,
-        typer.Option("--all", "-A", help="write all formats to BASE.*", rich_help_panel=_OUTPUT),
+        typer.Option("--all", "-A", help="write all formats to BASE.*", rich_help_panel=_OUTPUT,
+                     hidden=not _SHOW_ADVANCED),
     ] = None,
     # --- toggles ---
     do_fingerprint: Annotated[
         bool,
         typer.Option(
-            "--fingerprint/--no-fingerprint", help="identity probes", rich_help_panel=_TOGGLES
+            "--fingerprint/--no-fingerprint", help="identity probes", rich_help_panel=_TOGGLES,
+            hidden=not _SHOW_ADVANCED,
         ),
     ] = True,
     do_names: Annotated[
-        bool, typer.Option("--names/--no-names", help="name resolution", rich_help_panel=_TOGGLES)
+        bool, typer.Option("--names/--no-names", help="name resolution", rich_help_panel=_TOGGLES,
+                            hidden=not _SHOW_ADVANCED)
     ] = True,
     do_classify: Annotated[
         bool,
@@ -423,32 +466,33 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             "--classify/--no-classify",
             help="device classification (local, zero packets)",
             rich_help_panel=_TOGGLES,
+            hidden=not _SHOW_ADVANCED,
         ),
     ] = True,
     do_enrich: Annotated[
         bool,
         typer.Option("--enrich", help="external intel enrichment (data leaves host)",
-                     rich_help_panel=_TOGGLES),
+                     rich_help_panel=_TOGGLES, hidden=not _SHOW_ADVANCED),
     ] = False,
     do_ssvc: Annotated[
         bool,
         typer.Option("--ssvc", help="SSVC priority tags on findings (local)",
-                     rich_help_panel=_TOGGLES),
+                     rich_help_panel=_TOGGLES, hidden=not _SHOW_ADVANCED),
     ] = False,
     do_agentic: Annotated[
         bool,
         typer.Option("--agentic", help="ReAct LLM analysis via local Ollama",
-                     rich_help_panel=_TOGGLES),
+                     rich_help_panel=_TOGGLES, hidden=not _SHOW_ADVANCED),
     ] = False,
     do_plugins: Annotated[
         bool,
         typer.Option("--plugins", help="apply YAML plugin rules from config/plugins/",
-                     rich_help_panel=_TOGGLES),
+                     rich_help_panel=_TOGGLES, hidden=not _SHOW_ADVANCED),
     ] = False,
     do_deception: Annotated[
         bool,
         typer.Option("--deception", help="flag possible honeypot/decoy hosts (local, 0 packets)",
-                     rich_help_panel=_TOGGLES),
+                     rich_help_panel=_TOGGLES, hidden=not _SHOW_ADVANCED),
     ] = False,
     # --- persistence ---
     db: Annotated[
@@ -457,6 +501,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             "--db",
             help="SQLite path — persist this run and compare MACs to the baseline",
             rich_help_panel=_OUTPUT,
+            hidden=not _SHOW_ADVANCED,
         ),
     ] = None,
     baseline: Annotated[
@@ -465,6 +510,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             "--baseline",
             help="seed the MAC baseline from this run without raising rogue findings",
             rich_help_panel=_OUTPUT,
+            hidden=not _SHOW_ADVANCED,
         ),
     ] = False,
     # --- safety ---
@@ -477,7 +523,8 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     ] = False,
     audit_log: Annotated[
         str | None,
-        typer.Option("--audit-log", help="append JSONL audit trail", rich_help_panel=_SAFETY),
+        typer.Option("--audit-log", help="append JSONL audit trail", rich_help_panel=_SAFETY,
+                     hidden=not _SHOW_ADVANCED),
     ] = None,
     # --- maintenance ---
     _version: Annotated[
@@ -487,6 +534,16 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             callback=_version_cb,
             is_eager=True,
             help="show version",
+            rich_help_panel=_MAINT,
+        ),
+    ] = False,
+    _help_advanced: Annotated[
+        bool,
+        typer.Option(
+            "--help-advanced",
+            callback=_help_advanced_cb,
+            is_eager=True,
+            help="show every flag, including advanced/expert options",
             rich_help_panel=_MAINT,
         ),
     ] = False,
@@ -655,7 +712,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         raise typer.Exit(code=2) from exc
 
     if not silent:
-        report.render_result(console, result, quiet=quiet)
+        report.render_result(console, result, quiet=quiet, verbose=verbose)
         if not dry_run and not result.hosts:
             console.print(
                 "[dim]no hosts responded — they may be down, filtered, "
@@ -758,15 +815,38 @@ def install_engine_cmd(
         raise typer.Exit(code=1) from exc
 
 
+# Presets are thin argv rewrites, not a second code path: each expands to a
+# fixed prefix of ordinary `scan` flags, then the operator's own args are
+# appended after them. Click keeps the *last* value of a repeated option, so
+# any preset default the operator also types explicitly (e.g. `banshee pro
+# 10.0.0.1 --html custom.html`) overrides the preset — same flags, same
+# validation, same ScopeGuard, nothing preset-only to fall out of sync.
+_PRESET_DEFAULTS: dict[str, list[str]] = {
+    # fast minimal: default port set, no fingerprinting, quick timing.
+    "quick": ["--mode", "normal", "-T", "4", "--no-fingerprint"],
+    # full-signal: fingerprint/classify stay on by default; add adaptive probing,
+    # service/version ID, threat-intel enrichment, SSVC triage, and an HTML report.
+    "pro": [
+        "--mode", "normal", "--adaptive", "-sV", "--enrich", "--ssvc",
+        "--html", "banshee-report.html",
+    ],
+    # one word for the mode+timing combo instead of memorizing `-m stealth -T1`.
+    "stealth": ["--mode", "stealth", "-T", "1"],
+}
+
+
 def main() -> None:
     """Console entry point. Routes `banshee diff ...` and `banshee install-engine
-    ...` to their own apps and every other invocation to the scan command, so all
-    verbs share one `banshee`."""
+    ...` to their own apps, `banshee quick/pro/stealth ...` to the scan command
+    with that preset's defaults prepended, and every other invocation straight to
+    the scan command, so all verbs share one `banshee`."""
     argv = sys.argv[1:]
     if argv and argv[0] == "diff":
         diff_app(args=argv[1:])
     elif argv and argv[0] == "install-engine":
         install_app(args=argv[1:])
+    elif argv and argv[0] in _PRESET_DEFAULTS:
+        app(args=_PRESET_DEFAULTS[argv[0]] + argv[1:])
     else:
         app()
 

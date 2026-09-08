@@ -252,7 +252,12 @@ class ScanEngine:
         into.hostname = into.hostname or other.hostname
         into.vendor = into.vendor or other.vendor
         into.os_guess = into.os_guess or other.os_guess
-        into.device_type = into.device_type or other.device_type
+        if not into.device_type and other.device_type:
+            # Carried together deliberately: a device_type without its own
+            # confidence would look like a scored classification when it
+            # might not be one (or vice versa) once merged.
+            into.device_type = other.device_type
+            into.device_type_confidence = other.device_type_confidence
         # names: keep existing keys, only add new ones (don't clobber stronger sources)
         for key, value in other.names.items():
             into.names.setdefault(key, value)

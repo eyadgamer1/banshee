@@ -48,7 +48,7 @@
 
 ## What is BANSHEE?
 
-BANSHEE is a **network scanner with a first-class passive mode**. Point it at a network you are authorized to assess and it maps every host, fingerprints services, classifies devices, spots rogue hardware, and produces a risk report. It **scans actively by default like `nmap`** — `banshee <target>` just works. Add `-m passive` for a zero-packet, observe-only sweep that sends nothing on the wire.
+BANSHEE is an **active network scanner** — no passive traffic sniffing, no pcap replay. Point it at a network you are authorized to assess and it maps every host, fingerprints services, classifies devices, spots rogue hardware, and produces a risk report. It **scans actively like `nmap`** — `banshee <target>` just works. Use `--dry-run` to plan a scan and send zero packets, or `-m stealth` for a slow, rate-limited active sweep.
 
 It is built for ethical hackers and defenders who care about two things most scanners ignore:
 
@@ -61,7 +61,7 @@ It is built for ethical hackers and defenders who care about two things most sca
 
 | Capability | Most scanners | BANSHEE |
 |---|---|---|
-| **Default posture** | Send probes immediately | Passive — zero packets until you ask |
+| **Default posture** | Send probes immediately, no budget awareness | Active by default, but honest about cost — `--dry-run` plans with zero packets, `-m stealth` caps the rate |
 | **Result honesty** | "Open" with no provenance | `CONFIRMED / PROBABLE / POTENTIAL` tiers, never fabricated |
 | **Detection cost** | Not measured | Per-port risk weighting; cap it with a budget |
 | **Adaptive probing** | Static top-ports list | Bayesian per-host probe selection (Go engine) |
@@ -85,7 +85,7 @@ built-in default scope. No clone, no config, no Go toolchain (the fast Go engine
 is optional; see [below](#from-source--go-engine)). Per-OS details and `pipx`/`pip`
 alternatives follow.
 
-> **Requirements:** Python **3.12+**. The active TCP-connect sweep needs **no privileges**. Passive sniffing and ICMP discovery use raw sockets, which need **`sudo`** on Linux/macOS or **[Npcap](https://npcap.com)** on Windows.
+> **Requirements:** Python **3.12+**. The active TCP-connect sweep needs **no privileges**. ICMP discovery and raw-socket fingerprinting (`-i`/`--iface`, TLS JA4) need **`sudo`** on Linux/macOS or **[Npcap](https://npcap.com)** on Windows.
 
 The fastest path on every OS is [`uv`](https://github.com/astral-sh/uv). `pipx` (isolated) and `pip` also work.
 
@@ -120,10 +120,10 @@ curl -sSL https://raw.githubusercontent.com/eyadgamer1/banshee/main/install.sh |
 ```
 </details>
 
-Passive capture on an interface needs raw sockets, so prefix those runs with `sudo`:
+Raw-socket fingerprinting on an interface (`-i`/`--iface`, TLS JA4) needs raw sockets, so prefix those runs with `sudo`:
 
 ```bash
-sudo $(command -v banshee) -i eth0            # passive sniff on eth0
+sudo $(command -v banshee) 10.0.0.0/24 -i eth0
 ```
 
 ### Windows
@@ -140,7 +140,7 @@ banshee --help
 banshee 192.168.1.0/24 --mode normal
 ```
 
-The active TCP-connect sweep works out of the box. **Passive sniffing on Windows requires [Npcap](https://npcap.com)** (install with "WinPcap API-compatible mode"). The banner renders on any console — it falls back to plain ASCII on legacy code pages automatically.
+The active TCP-connect sweep works out of the box. **Raw-socket fingerprinting on Windows requires [Npcap](https://npcap.com)** (install with "WinPcap API-compatible mode"). The banner renders on any console — it falls back to plain ASCII on legacy code pages automatically.
 
 ### macOS
 
@@ -149,8 +149,8 @@ brew install uv                    # or: brew install pipx
 uv tool install git+https://github.com/eyadgamer1/banshee
 banshee --help
 
-# raw-socket features (passive sniff / ICMP) need sudo:
-sudo $(command -v banshee) -i en0
+# raw-socket features (-i/--iface fingerprinting, ICMP discovery) need sudo:
+sudo $(command -v banshee) 10.0.0.0/24 -i en0
 ```
 
 ### Docker
@@ -243,15 +243,24 @@ or rebuild with `git pull && cd engine && go build -o banshee-engine ./cmd/bansh
 ## Quick start
 
 ```bash
-# Passive discovery of your LAN — sends nothing, just listens and infers
-banshee 192.168.1.0/24
+# One host, default settings — confirm open ports and grab banners
+banshee 192.168.1.10
 
-# Active sweep of one host — confirm open ports and grab banners
-banshee 192.168.1.10 --mode normal
+# A subnet, every port
+banshee 192.168.1.0/24 -p-
 
-# Full local analysis, HTML report, no data leaves your machine
-banshee 192.168.1.0/24 --mode normal --classify --ssvc --html report.html
+# fast/minimal · full-signal + HTML report · slow and quiet — one word each
+banshee quick 192.168.1.0/24
+banshee pro 192.168.1.0/24
+banshee stealth 192.168.1.0/24
+
+# Plan only — see what would run, send zero packets
+banshee 192.168.1.0/24 --dry-run
 ```
+
+`banshee --help` shows the common flags above; `banshee --help-advanced`
+shows everything (raw-socket fingerprinting, the Go engine's adaptive/UDP
+modes, output formats, persistence, and more).
 
 By default BANSHEE scans **any target you give it, like `nmap`** — the authorization responsibility is yours. To restrict it to a lab or engagement range, pass a scope allowlist with `--scope` — see [Scope & authorization](#scope--authorization).
 
@@ -283,7 +292,7 @@ hosts up 1  services 2  findings 0  in-scope 1  out-of-scope 0  packets 6
  127.0.0.1   kubernetes.docker.internal               Windows   135, 445   confirmed
 ```
 
-The `Conf.` column is the trust grade. `mode=normal -T4 engine=python` echoes the two intensity dials and the active-scan engine in force. `packets 6` is the exact number of probes sent — passive runs show `packets 0`. During a longer scan the dashboard shows a per-host table updating live (discovering → fingerprinting → done) with a running stats bar.
+The `Conf.` column is the trust grade. `mode=normal -T4 engine=python` echoes the two intensity dials and the active-scan engine in force. `packets 6` is the exact number of probes sent — a `--dry-run` shows `packets 0`. During a longer scan the dashboard shows a per-host table updating live (discovering → fingerprinting → done) with a running stats bar.
 
 Colour and detail are controlled independently from scan intensity — see the two dials below.
 
@@ -299,14 +308,16 @@ banshee [OPTIONS] TARGETS...
 
 BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; *intensity* controls how loud it is on the wire. They never affect each other.
 
+The table below is the **common surface** — what `banshee --help` shows by
+default. Every other flag (raw-socket fingerprinting, `--engine`/`--adaptive`,
+output formats besides JSON/HTML, toggles, persistence, `--audit-log`, …) still
+works, just hidden until you ask: run `banshee --help-advanced` to see all of it.
+
 ### Targets & input
 
 | Flag | Description |
 |---|---|
-| `-i, --iface TEXT` | Capture interface for passive sniffing |
-| `--pcap TEXT` | Read from a saved capture file instead of live traffic |
-| `-p, --ports TEXT` | Ports to probe: `22,80,443` or `1-1024` (default: common high-signal set) |
-| `--sniff-timeout FLOAT` | Seconds the passive sniffer listens before reporting (default `10.0`) |
+| `-p, --ports TEXT` | Ports to probe: `22,80,443` or `1-1024`; `-` or `all` = every port 1-65535 (default: common high-signal set) |
 
 ### Verbosity — *how much it prints*
 
@@ -314,54 +325,39 @@ BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; 
 |---|---|
 | `-v, -vv, -vvv` | Increase detail |
 | `-q, --quiet` | Results only |
-| `--silent` | No terminal output (files only) |
-| `--debug` | Debug tracing |
-| `--no-color` | Disable ANSI colour |
+
+`--silent`, `--debug`, `--no-color` also exist — `banshee --help-advanced`.
 
 ### Intensity — *how loud it is*
 
 | Flag | Description |
 |---|---|
-| `-m, --mode [passive\|stealth\|normal\|aggressive]` | Scan intensity (default **`normal`** — actively probes like `nmap`). `passive` sends zero packets (observe-only) |
+| `-m, --mode [stealth\|normal\|aggressive]` | Scan intensity (default **`normal`** — actively probes like `nmap`). `stealth` is slow and rate-limited; `--dry-run` sends zero packets |
 | `-T, --timing 0..5` | Timing template, T0 (paranoid) … T5 (insane), default `3` |
-| `--rate INTEGER` | Max packets/sec |
-| `--timeout INTEGER` | Probe timeout ms (default from `-T`) |
-| `--retries INTEGER` | Probe retries (default from `-T`) |
-| `--threads INTEGER` | Max concurrency |
-| `--max-detect-risk 0..10` | Hard ceiling on noise. `0` forces passive; `10` is full-intensity. Out-of-range values are rejected |
+
+`--rate`, `--timeout`, `--retries`, `--threads`, `--max-detect-risk` also exist
+(the last is a hard ceiling on noise: `0` = no active probes, `10` = full
+intensity) — `banshee --help-advanced`.
 
 ### Engine — *who does the active probing*
 
 | Flag | Description |
 |---|---|
-| `--engine [python\|go\|auto]` | Active-scan core (default **`auto`**). `auto` uses `go` when its binary is present — and **fetches it automatically** the first time a Go-only feature (`--adaptive`/`--udp`/`-sV`) needs it — else falls back to `python`. `go` forces the fast static binary; `python` forces the in-process engine. Passive capture, analysis and reporting stay Python either way |
-| `--adaptive` | Go only: pick probes by information-gain per unit of detection risk and stop early once a device class is confident. The report and JSON then include a `plan` block — probes saved, detection risk spent, and per-host device classification (requires `--engine go`/`auto`) |
-| `--udp` | Go only: UDP scan (like `nmap -sU`). A replying port is **open**, an ICMP-unreachable is **closed**, and a **silent** port is honestly **`open\|filtered`** — never a fake "open" (requires `--engine go`/`auto`; mutually exclusive with `--adaptive`) |
-| `-sV, --service-scan` | Go only: identify a service's **product + version** from its banner. Match-only — a version is reported **only** when a captured banner matches a signature, never guessed from the port (requires `--engine go`/`auto`; TCP-only) |
+| `-sV, --service-scan` | Go only: identify a service's **product + version** from its banner. Match-only — a version is reported **only** when a captured banner matches a signature, never guessed from the port (auto-fetches the Go engine on first use; TCP-only) |
 
-> `--engine go` needs the binary built (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`) and found via `$BANSHEE_ENGINE`, your `PATH`, or the repo's `engine/` directory. See [The Go engine](#the-go-engine).
+`--engine [python\|go\|auto]` (default `auto` — uses Go when present, else
+Python), `--adaptive` (Go-only info-gain probe planner), and `--udp` also exist
+— `banshee --help-advanced`.
 
-### Toggles
+> `--engine go` needs the binary built (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`) and found via `$BANSHEE_ENGINE`, your `PATH`, or the repo's `engine/` directory, or just run `banshee install-engine`. See [The Go engine](#the-go-engine).
 
-| Flag | Description |
-|---|---|
-| `--fingerprint / --no-fingerprint` | Identity probes (default on) |
-| `--names / --no-names` | DNS / mDNS / NetBIOS name resolution (default on) |
-| `--classify / --no-classify` | Device classification — local, **zero packets** (default on) |
-| `--ssvc` | SSVC priority tags on findings (local) |
-| `--plugins` | Apply YAML detection rules from `config/plugins/` |
-| `--deception` | Flag possible honeypot/decoy hosts from collected data — local, **zero packets**. Always a `POTENTIAL` lead, never a verdict |
-| `--enrich` | EPSS + CISA KEV enrichment — **data leaves your host** |
-| `--agentic` | ReAct LLM analysis via a local Ollama model |
+### Toggles, output files, persistence — advanced
 
-### Output files
-
-| Flag | Description |
-|---|---|
-| `--txt / --json / --xml / --html / --csv / --sarif PATH` | Write that report format |
-| `-A, --all BASE` | Write every format to `BASE.*` |
-| `--db PATH` | Persist this run to SQLite and compare MACs to the baseline |
-| `--baseline` | Seed the MAC baseline from this run without raising rogue findings |
+`--fingerprint/--no-fingerprint`, `--names/--no-names`,
+`--classify/--no-classify`, `--ssvc`, `--plugins`, `--deception`, `--enrich`,
+`--agentic`, `--txt`/`--xml`/`--csv`/`--sarif`, `-A`/`--all`, `--db`,
+`--baseline`, `--audit-log` — all on by request only, all covered in
+`banshee --help-advanced`.
 
 ### Safety & maintenance
 
@@ -370,17 +366,16 @@ BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; 
 | `--scope TEXT` | Scope allowlist file (default `config/scope.yaml`; a built-in default is used if absent) |
 | `--dry-run` | Plan only; send zero packets |
 | `--version` | Show version |
+| `--help-advanced` | Show every flag, common and advanced |
 
 ---
 
 ## Examples cookbook
 
-**Passive — sends nothing:**
+**Zero packets — plan only:**
 
 ```bash
-banshee 192.168.1.0/24                        # infer hosts from observed traffic
-sudo banshee -i eth0 --sniff-timeout 30       # sniff eth0 for 30s (raw socket → sudo)
-banshee --pcap capture.pcap 10.0.0.0/24       # replay a saved capture, no live traffic
+banshee 192.168.1.0/24 --dry-run              # see what would be probed, send nothing
 ```
 
 **Active — you choose the intensity:**
@@ -388,9 +383,18 @@ banshee --pcap capture.pcap 10.0.0.0/24       # replay a saved capture, no live 
 ```bash
 banshee 192.168.1.10 --mode normal                     # confirm open ports + banners
 banshee 10.0.0.5 -p 22,80,443,3389 -m normal -T4       # specific ports, fast
+banshee 10.0.0.0/24 -p- -m normal                       # every port, 1-65535
 banshee 10.0.0.0/24 -m stealth -T1                      # slow and quiet
 banshee 10.0.0.0/24 -m aggressive -T4 --max-detect-risk 9   # loud, full intensity
 banshee 10.0.0.0/24 -m normal --max-detect-risk 3      # active, but capped to quiet ports
+```
+
+**Presets — the common combos, one word:**
+
+```bash
+banshee quick 192.168.1.0/24        # fast, no fingerprinting, common ports
+banshee pro 10.0.0.0/24             # fingerprint + classify + enrich + ssvc + adaptive -sV, HTML report
+banshee stealth 10.0.0.0/24         # -m stealth -T1, one word instead of memorizing the combo
 ```
 
 **Analysis & reporting (all local):**
@@ -420,7 +424,7 @@ banshee 10.0.0.0/24 -m normal --agentic                   # ReAct LLM risk analy
 
 For fast, low-footprint active sweeps — and for hosts where you cannot install Python — BANSHEE ships a standalone Go engine: a single static binary, no runtime, cross-compiles for ARM drop-boxes. It emits the **exact same JSON schema** as the Python tool, so both are interchangeable in a pipeline.
 
-**Go is the hands, Python is the mind.** You do not have to choose between them: run the normal `banshee` command with `--engine go` and the Go binary does the fast, parallel active probing while Python keeps the passive capture, classification, LLM analysis and all six report formats. It's one tool.
+**Go is the hands, Python is the mind.** You do not have to choose between them: run the normal `banshee` command with `--engine go` and the Go binary does the fast, parallel active probing while Python keeps classification, LLM analysis, and all six report formats. It's one tool.
 
 ```bash
 # Unified: Python drives, Go does the loud active work, one report at the end
@@ -552,7 +556,7 @@ The most dangerous thing a security scanner can do is lie — report a port that
 
 **The guarantee:** a service is reported open **only** as the direct record of a socket that actually opened. Open ports are graded `CONFIRMED`; an inference is at most `PROBABLE`; anything an LLM suggests is capped at `POTENTIAL` and can never be promoted.
 
-**Run the proof yourself.** The ground-truth suite binds real listeners on loopback, runs the real CLI, and asserts the reported open ports equal the bound ports *exactly* — including the negative direction, that an unbound port is never reported open, and that passive mode sends zero packets:
+**Run the proof yourself.** The ground-truth suite binds real listeners on loopback, runs the real CLI, and asserts the reported open ports equal the bound ports *exactly* — including the negative direction, that an unbound port is never reported open, and that `--dry-run` sends zero packets:
 
 ```bash
 uv run pytest tests/test_ground_truth.py -v
@@ -647,12 +651,12 @@ alone, so an ordinary web+SSH server is left untouched.
 | `--udp needs the Go engine` | `--udp` (and `--adaptive`) run only on the Go engine. Add `--engine go` (or `--engine auto` with the binary present). |
 | `--udp and --adaptive are mutually exclusive` | Pick one: UDP scan **or** the TCP adaptive planner. |
 | UDP scan shows lots of `open\|filtered` | Working as intended — that's an honest "can't tell open from filtered", not a bug. A firewall dropping UDP looks identical to a silent open service; only a reply proves `open`. |
-| Passive sniff finds nothing on Windows | Install [Npcap](https://npcap.com) in WinPcap-compatible mode. Passive capture needs a packet driver. |
-| `Operation not permitted` on `-i` / passive | Raw sockets need privileges — run with `sudo` (Linux/macOS) or as Administrator (Windows). The active TCP/UDP sweep does not. |
+| `-i`/`--iface` finds nothing on Windows | Install [Npcap](https://npcap.com) in WinPcap-compatible mode. Raw-socket fingerprinting needs a packet driver. |
+| `Operation not permitted` on `-i` / ICMP | Raw sockets need privileges — run with `sudo` (Linux/macOS) or as Administrator (Windows). The active TCP/UDP sweep does not. |
 | Garbled banner on an old terminal | Harmless — BANSHEE auto-falls back to an ASCII banner when the console can't render block glyphs. |
 | `--agentic` does nothing | It needs a local [Ollama](https://ollama.com) server with a pulled model. |
 
-**Exit codes:** `0` success · `1` engine/runtime error (e.g. a report path that can't be written, or the Go engine failing to run) · `2` bad usage (unknown flag/value, no valid targets, malformed target, bad `--ports`, out-of-range option, missing `--pcap`, unreadable/invalid scope file) · `3` scope violation (every target out of scope).
+**Exit codes:** `0` success · `1` engine/runtime error (e.g. a report path that can't be written, or the Go engine failing to run) · `2` bad usage (unknown flag/value, no valid targets, malformed target, bad `--ports`, out-of-range option, unreadable/invalid scope file) · `3` scope violation (every target out of scope).
 
 Every bad input fails fast with a one-line message and one of these codes — never a Python traceback. A malformed target mixed with good ones is skipped with a warning; a well-formed but unresolvable hostname simply reports that no host responded.
 

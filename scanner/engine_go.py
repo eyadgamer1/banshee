@@ -175,6 +175,31 @@ async def resolve_targets(targets: list[str]) -> list[str]:
     return out
 
 
+def _compact_port_spec(ports: list[int]) -> str:
+    """Render a sorted port list as a compact nmap-style spec, collapsing
+    consecutive runs into "lo-hi" ranges.
+
+    This is not cosmetic: exploding a large contiguous range (e.g. every
+    port, 1-65535, as `-p-`/`--ports all` now allows) into one comma-separated
+    number per port produces a single command-line argument of ~380KB, which
+    exceeds Windows' CreateProcess argument-length limit outright (confirmed:
+    `FileNotFoundError: [WinError 206] The filename or extension is too long`)
+    and pointlessly bloats it everywhere else. The Go engine's own `-ports`
+    flag already parses "lo-hi" ranges natively, so there is no reason to ever
+    emit the exploded form.
+    """
+    parts: list[str] = []
+    start = prev = ports[0]
+    for p in ports[1:]:
+        if p == prev + 1:
+            prev = p
+            continue
+        parts.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = p
+    parts.append(str(start) if start == prev else f"{start}-{prev}")
+    return ",".join(parts)
+
+
 def build_args(cfg: ScanConfig, scope_path: str, targets: list[str]) -> list[str]:
     """Translate a ScanConfig into banshee-engine CLI arguments.
 
@@ -186,7 +211,7 @@ def build_args(cfg: ScanConfig, scope_path: str, targets: list[str]) -> list[str
     args: list[str] = ["-scope", scope_path, "-mode", cfg.mode.value, "-T", str(cfg.timing)]
 
     if cfg.ports:
-        args += ["-ports", ",".join(str(p) for p in cfg.ports)]
+        args += ["-ports", _compact_port_spec(sorted(cfg.ports))]
     if cfg.rate is not None:
         args += ["-rate", str(cfg.rate)]
     if cfg.threads is not None:

@@ -47,15 +47,16 @@ const (
 )
 
 type Service struct {
-	Port       int            `json:"port"`
-	Proto      string         `json:"proto"`
-	State      PortState      `json:"state"`
-	Name       *string        `json:"name"`
-	Product    *string        `json:"product"`
-	Version    *string        `json:"version"`
-	Banner     *string        `json:"banner"`
-	Confidence ConfidenceTier `json:"confidence"`
-	Source     string         `json:"source"`
+	Port              int             `json:"port"`
+	Proto             string          `json:"proto"`
+	State             PortState       `json:"state"`
+	Name              *string         `json:"name"`
+	Product           *string         `json:"product"`
+	Version           *string         `json:"version"`
+	VersionConfidence *ConfidenceTier `json:"version_confidence"`
+	Banner            *string         `json:"banner"`
+	Confidence        ConfidenceTier  `json:"confidence"`
+	Source            string          `json:"source"`
 }
 
 type Finding struct {

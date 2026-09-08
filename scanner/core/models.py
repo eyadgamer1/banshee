@@ -80,6 +80,13 @@ class Service(BaseModel):
     name: str | None = None
     product: str | None = None
     version: str | None = None
+    # Separate axis from `confidence` (which grades the OPEN/CLOSED state — a
+    # real TCP handshake happened, that part is never in doubt). This grades the
+    # product/version CLAIM itself: CONFIRMED for a named-product signature
+    # match (SSH/Apache/vsFTPd/...), PROBABLE for the generic "Word/1.2.3"
+    # fallback pattern, which can match an unrelated or spoofed token. None
+    # when no product/version was matched at all.
+    version_confidence: ConfidenceTier | None = None
     banner: str | None = None
     confidence: ConfidenceTier = ConfidenceTier.CONFIRMED
     source: str = ""  # feature ID that produced this (e.g. "A3", "B2")
@@ -109,6 +116,12 @@ class Host(BaseModel):
     vendor: str | None = None
     os_guess: str | None = None
     device_type: str | None = None
+    # Calibrated softmax confidence in [0, 1] for `device_type`, set only when
+    # the weighted-signal classifier (B5) actually computed one. None when
+    # device_type came from elsewhere (e.g. the TCP/IP stack fingerprinter's
+    # own OS-family guess, B3) rather than a scored vote — that is not the
+    # same claim as "confidence 0", so it stays unset rather than defaulted.
+    device_type_confidence: float | None = None
     # name-resolve (B6) sources kept separate for evidence/replay
     names: dict[str, str] = Field(default_factory=dict)  # {"rdns": ..., "mdns": ...}
     services: list[Service] = Field(default_factory=list)

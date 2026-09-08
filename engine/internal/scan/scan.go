@@ -316,10 +316,15 @@ func (e *Engine) probe(ctx context.Context, ip string, port int) probeResult {
 	pr.confidence = model.Confirmed
 	if e.opts.Banners {
 		pr.banner = readBanner(conn)
-		if pr.banner == "" && e.opts.ServiceScan {
-			// The service did not speak first; -sV lets us send one protocol
-			// probe on the connection we already hold to draw out a version.
-			pr.banner = activeBanner(conn, port)
+		if e.opts.ServiceScan && weakBanner(pr.banner) {
+			// The passive banner (if any) didn't yield a confident,
+			// named-product match — either the service stayed silent, or what
+			// it sent only matched the generic fallback signature. Either way
+			// -sV lets us send one more protocol probe on the connection we
+			// already hold, to try to disambiguate. httpLikePorts (inside
+			// activeBanner) gates this to HTTP-shaped ports; on anything else
+			// it is a safe no-op, same as before.
+			pr.banner = preferBanner(pr.banner, activeBanner(conn, port))
 		}
 	}
 	return pr
@@ -350,9 +355,14 @@ func (e *Engine) service(pr probeResult) model.Service {
 		svc.Banner = model.Ptr(pr.banner)
 		// Match-only: product/version are set only when the captured banner
 		// matches a signature, never inferred from the port.
-		if product, version := matchService(pr.banner); product != "" {
+		if product, version, specific := matchService(pr.banner); product != "" {
 			svc.Product = model.Ptr(product)
 			svc.Version = model.Ptr(version)
+			tier := model.Probable
+			if specific {
+				tier = model.Confirmed
+			}
+			svc.VersionConfidence = &tier
 		}
 	}
 	return svc

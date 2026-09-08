@@ -45,8 +45,18 @@ def _tier(value: str) -> str:
     return f"[{_TIER_STYLE.get(value, 'white')}]{value}[/]"
 
 
-def render_result(console: Console, result: ScanResult, *, quiet: bool = False) -> None:
-    """Print the final scan summary to `console`."""
+def render_result(
+    console: Console, result: ScanResult, *, quiet: bool = False, verbose: int = 0
+) -> None:
+    """Print the final scan summary to `console`.
+
+    Default output is deliberately lean: banner, one stats line, and the host
+    table — that's the answer to "what's out there." The adaptive planner's
+    audit trail (`_render_plan`) is a debug/verification artifact, not part of
+    that core answer, so it stays behind `-v`. Findings are the tool's actual
+    deliverable, not clutter, so `_render_findings` stays unconditional
+    whenever there are any to show — it already self-gates on empty.
+    """
     if not quiet:
         console.print(f"[bold yellow]{result.banner}[/bold yellow]")
     console.print(
@@ -78,7 +88,8 @@ def render_result(console: Console, result: ScanResult, *, quiet: bool = False) 
         )
     console.print(table)
 
-    _render_plan(console, result)
+    if verbose >= 1:
+        _render_plan(console, result)
     _render_findings(console, result)
 
 

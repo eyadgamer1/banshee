@@ -16,7 +16,7 @@ import ipaddress
 
 from pydantic import BaseModel, Field
 
-from scanner.core.models import Host, PortState, ScanResult, Service
+from scanner.core.models import ConfidenceTier, Host, PortState, ScanResult, Service
 
 
 class ServiceChange(BaseModel):
@@ -26,6 +26,12 @@ class ServiceChange(BaseModel):
     proto: str
     old: str | None  # "product version" in the earlier run, or None if unknown
     new: str | None
+    # Carried through so a renderer can flag a version claim that came from the
+    # generic fallback signature (PROBABLE) rather than a named-product match
+    # (CONFIRMED) — an "opened/closed/changed" security signal is only as good
+    # as the identification behind it; see scanner/risk/__init__.py.
+    old_version_confidence: ConfidenceTier | None = None
+    new_version_confidence: ConfidenceTier | None = None
 
 
 class HostDiff(BaseModel):
@@ -83,7 +89,14 @@ def compute_diff(old: ScanResult, new: ScanResult) -> ScanDiff:
         opened = [after[k] for k in sorted(after.keys() - before.keys())]
         closed = [before[k] for k in sorted(before.keys() - after.keys())]
         changed = [
-            ServiceChange(port=k[0], proto=k[1], old=_identity(before[k]), new=_identity(after[k]))
+            ServiceChange(
+                port=k[0],
+                proto=k[1],
+                old=_identity(before[k]),
+                new=_identity(after[k]),
+                old_version_confidence=before[k].version_confidence,
+                new_version_confidence=after[k].version_confidence,
+            )
             for k in sorted(before.keys() & after.keys())
             if _identity(before[k]) != _identity(after[k])
         ]
@@ -93,10 +106,22 @@ def compute_diff(old: ScanResult, new: ScanResult) -> ScanDiff:
     return ScanDiff(new_hosts=new_hosts, gone_hosts=gone_hosts, host_diffs=host_diffs)
 
 
+def _unconfirmed(tier: ConfidenceTier | None) -> str:
+    """Marker for a product/version claim from the generic fallback signature.
+
+    The brackets are escaped (`\\[` not `[`) because this string is fed to a rich
+    Console.print as markup — an unescaped `[unconfirmed]` is parsed as a style
+    tag, silently swallowed, and never reaches the terminal at all.
+    """
+    return r" \[unconfirmed]" if tier == ConfidenceTier.PROBABLE else ""
+
+
 def _svc_label(s: Service) -> str:
     ident = _identity(s)
     name = s.name or "?"
-    return f"{s.port}/{s.proto.value} {name}" + (f" ({ident})" if ident else "")
+    if not ident:
+        return f"{s.port}/{s.proto.value} {name}"
+    return f"{s.port}/{s.proto.value} {name} ({ident}){_unconfirmed(s.version_confidence)}"
 
 
 def render_diff(diff: ScanDiff, console) -> None:  # type: ignore[no-untyped-def]
@@ -122,7 +147,8 @@ def render_diff(diff: ScanDiff, console) -> None:  # type: ignore[no-untyped-def
         for s in hd.closed:
             console.print(f"    [red]- closed[/red] {_svc_label(s)}")
         for c in hd.changed:
+            old = f"{c.old or '?'}{_unconfirmed(c.old_version_confidence)}"
+            new = f"{c.new or '?'}{_unconfirmed(c.new_version_confidence)}"
             console.print(
-                f"    [yellow]~ changed[/yellow] {c.port}/{c.proto}  "
-                f"{c.old or '?'} [dim]->[/dim] {c.new or '?'}"
+                f"    [yellow]~ changed[/yellow] {c.port}/{c.proto}  {old} [dim]->[/dim] {new}"
             )

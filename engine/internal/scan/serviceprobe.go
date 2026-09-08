@@ -23,30 +23,43 @@ import (
 // serviceSignature maps a response pattern to a product and version. When
 // product is non-empty it is a fixed name and the version comes from capture
 // group 1; otherwise product is capture group 1 and version is group 2.
+//
+// specific marks a signature that names the exact product it looks for (SSH,
+// Apache, vsFTPd, ...): a match is strong evidence, because the pattern only
+// fires for that one protocol/product family. The generic fallback pattern
+// matches ANY "Word/1.2.3"-shaped token in the banner — it makes -sV useful
+// against unlisted products, but a match proves far less: the token could be
+// an unrelated version string embedded in a banner, or (since it is derived
+// from bytes the target chose to send) trivially spoofed. Callers use this
+// bit to grade the resulting product/version claim, not just record it.
 type serviceSignature struct {
-	re      *regexp.Regexp
-	product string
+	re       *regexp.Regexp
+	product  string
+	specific bool
 }
 
 // Ordered most-specific first; the first match wins.
 var serviceSignatures = []serviceSignature{
 	// SSH: "SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13" -> OpenSSH 6.6.1p1
-	{regexp.MustCompile(`SSH-\d[\d.]*-([A-Za-z][\w.+-]*?)[_/ ]([\d][\w.]*)`), ""},
+	{regexp.MustCompile(`SSH-\d[\d.]*-([A-Za-z][\w.+-]*?)[_/ ]([\d][\w.]*)`), "", true},
 	// HTTP Server header: "Server: Apache/2.4.7 (Ubuntu)" -> Apache 2.4.7
-	{regexp.MustCompile(`(?i)server:\s*([A-Za-z][\w.+-]*)/([\d][\w.]*)`), ""},
+	{regexp.MustCompile(`(?i)server:\s*([A-Za-z][\w.+-]*)/([\d][\w.]*)`), "", true},
 	// FTP greeting: "220 (vsFTPd 3.0.2)" -> vsFTPd 3.0.2
-	{regexp.MustCompile(`(?i)\b(vsFTPd|ProFTPD|Pure-FTPd|FileZilla|FTP)\b[ /]v?([\d][\w.]*)`), ""},
+	{regexp.MustCompile(`(?i)\b(vsFTPd|ProFTPD|Pure-FTPd|FileZilla|FTP)\b[ /]v?([\d][\w.]*)`), "", true},
 	// SMTP/IMAP/POP with an embedded product/version.
-	{regexp.MustCompile(`(?i)\b(Postfix|Exim|Sendmail|Dovecot)\b[ /]v?([\d][\w.]*)`), ""},
-	// Generic "Product/1.2.3" as a last resort — still a real captured token.
-	{regexp.MustCompile(`\b([A-Za-z][\w.+-]{1,30})/([\d]+\.[\d][\w.]*)`), ""},
+	{regexp.MustCompile(`(?i)\b(Postfix|Exim|Sendmail|Dovecot)\b[ /]v?([\d][\w.]*)`), "", true},
+	// Generic "Product/1.2.3" as a last resort — still a real captured token,
+	// but not tied to a known product family, so it is graded PROBABLE.
+	{regexp.MustCompile(`\b([A-Za-z][\w.+-]{1,30})/([\d]+\.[\d][\w.]*)`), "", false},
 }
 
 // matchService extracts (product, version) from a banner, or ("","") when no
 // signature matches. The caller leaves the fields unset on an empty result.
-func matchService(banner string) (product, version string) {
+// specific reports whether the match came from a named-product signature
+// (strong evidence) or the generic fallback pattern (weaker — grade PROBABLE).
+func matchService(banner string) (product, version string, specific bool) {
 	if banner == "" {
-		return "", ""
+		return "", "", false
 	}
 	for _, sig := range serviceSignatures {
 		m := sig.re.FindStringSubmatch(banner)
@@ -54,11 +67,37 @@ func matchService(banner string) (product, version string) {
 			continue
 		}
 		if sig.product != "" {
-			return sig.product, m[1]
+			return sig.product, m[1], sig.specific
 		}
-		return m[1], m[2]
+		return m[1], m[2], sig.specific
 	}
-	return "", ""
+	return "", "", false
+}
+
+// weakBanner reports whether a captured banner did NOT yield a confident,
+// named-product match — either nothing was captured, or what was captured
+// only matched the generic fallback signature (which, as `matchService` docs
+// note, can fire on an unrelated or spoofed token). -sV uses this to decide
+// whether sending the extra disambiguating probe is worth it.
+func weakBanner(banner string) bool {
+	_, _, specific := matchService(banner)
+	return !specific
+}
+
+// preferBanner picks which banner text to keep after an optional
+// disambiguating probe. The active result wins when it gives a confident,
+// named-product match, or when the passive banner had nothing at all;
+// otherwise the original passive banner is kept — a weak-but-real capture is
+// not thrown away for an equally weak or empty active result.
+func preferBanner(passive, active string) string {
+	if active == "" {
+		return passive
+	}
+	_, _, activeSpecific := matchService(active)
+	if activeSpecific || passive == "" {
+		return active
+	}
+	return passive
 }
 
 // httpLikePorts are the plaintext HTTP ports worth a generic GET probe. TLS
