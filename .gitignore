@@ -48,3 +48,17 @@ banshee-engine.exe
 /banshee-engine
 engine/banshee-engine
 engine/banshee-engine.exe
+
+# Secrets. Nothing here is used by BANSHEE today — the scanner reads no
+# credentials and only --enrich talks to a network service, unauthenticated.
+# These patterns exist so a key dropped in the working tree can never be
+# committed by accident.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+credentials.json
