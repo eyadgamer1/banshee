@@ -75,6 +75,14 @@ func NewEngine(g *scope.Guard, b *budget.Budget, o Options) *Engine {
 	if o.ServiceScan {
 		o.Banners = true
 	}
+	// The adaptive planner picks its own candidates, so the scope port cap and
+	// the budget's per-probe risk ceiling have to reach it here — otherwise both
+	// limits would apply to the exhaustive path only and an --adaptive run would
+	// quietly ignore settings the operator wrote down.
+	o.PerHostProbe.MaxPortRisk = b.MaxProbeRisk
+	if limit := g.MaxPortsPerHost; limit > 0 && (o.PerHostProbe.MaxProbes <= 0 || o.PerHostProbe.MaxProbes > limit) {
+		o.PerHostProbe.MaxProbes = limit
+	}
 	return &Engine{guard: g, budget: b, opts: o}
 }
 
@@ -133,9 +141,15 @@ func (e *Engine) Run(ctx context.Context, targets []string) (*model.Result, erro
 		hosts []model.Host
 		// Init the plan's slices non-nil so an adaptive run that recorded no steps
 		// still serializes "steps":[]/"verdicts":[], not null (pydantic rejects null).
-		plan     = &model.PlanReport{Steps: []model.PlanStep{}, Verdicts: []model.HostVerdict{}}
-		wg       sync.WaitGroup
-		hostSlot = make(chan struct{}, hostParallelism(e.budget.Concurrency))
+		plan = &model.PlanReport{Steps: []model.PlanStep{}, Verdicts: []model.HostVerdict{}}
+		wg   sync.WaitGroup
+		// Concurrency is split across two axes: how many hosts run at once, and
+		// how many ports of one host are in flight. Scanning a single host must
+		// still be able to spend the whole budget, or -p- on one target degrades
+		// to one connect timeout at a time.
+		hostSlots = hostParallelism(e.budget.Concurrency, len(inScope))
+		portSlots = portParallelism(e.budget.Concurrency, hostSlots)
+		hostSlot  = make(chan struct{}, hostSlots)
 	)
 
 	for _, ip := range inScope {
@@ -144,7 +158,7 @@ func (e *Engine) Run(ctx context.Context, targets []string) (*model.Result, erro
 		go func(ip string) {
 			defer wg.Done()
 			defer func() { <-hostSlot }()
-			host, steps, verdict := e.scanHost(ctx, ip)
+			host, steps, verdict := e.scanHost(ctx, ip, portSlots)
 			// A down/filtered host still consumed real probes and detection-risk
 			// budget under adaptive mode — record steps/verdict for it too, or
 			// the audit trail (Stats.PacketsSent vs Plan.Steps) silently disagrees
@@ -180,20 +194,75 @@ func (e *Engine) Run(ctx context.Context, targets []string) (*model.Result, erro
 // hostParallelism caps how many hosts run at once. It is derived from the
 // per-probe concurrency so the two multiply out to a sane socket count rather
 // than exploding on a large target list; the budget's own delay/rate cap remains
-// the true throttle on packets emitted.
-func hostParallelism(conc int) int {
-	if conc <= 0 {
+// the true throttle on packets emitted. It never exceeds the number of hosts
+// actually being scanned, so a single-target run leaves the rest of the budget
+// for portParallelism instead of stranding it.
+func hostParallelism(conc, hosts int) int {
+	n := conc
+	if n <= 0 {
+		n = 1
+	}
+	if n > 64 {
+		n = 64
+	}
+	if hosts > 0 && n > hosts {
+		n = hosts
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// portParallelism is how many ports of ONE host may be probed at once. Without
+// it every port of a host is probed strictly in series, so a firewalled target
+// costs one full connect timeout per port: 65535 ports at the T3 timeout is over
+// two days for a single host, which the operator experiences as a hang.
+//
+// The product with hostParallelism stays at or below the configured concurrency,
+// which the budget's own slot channel enforces as the hard ceiling regardless.
+// This changes only how many probes may be in flight — never how fast packets
+// leave, which remains Throttle's global, lock-held pacing guarantee.
+func portParallelism(conc, hostSlots int) int {
+	if conc <= 1 || hostSlots <= 0 {
 		return 1
 	}
-	if conc > 64 {
-		return 64
+	if n := conc / hostSlots; n > 1 {
+		return n
 	}
-	return conc
+	return 1
+}
+
+// probeSeries runs one probe per port with bounded parallelism and returns the
+// results in candidate order, so a parallel sweep records exactly what a serial
+// one would have. Determinism is the point: a report has to be diffable against
+// the previous run, and goroutine completion order is not.
+func probeSeries(ctx context.Context, ports []int, slots int, probe func(context.Context, int) probeResult) []probeResult {
+	results := make([]probeResult, len(ports))
+	if slots <= 1 || len(ports) <= 1 {
+		for i, port := range ports {
+			results[i] = probe(ctx, port)
+		}
+		return results
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, slots)
+	for i, port := range ports {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i, port int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			results[i] = probe(ctx, port)
+		}(i, port)
+	}
+	wg.Wait()
+	return results
 }
 
 // scanHost probes one IP, adaptively or exhaustively, and returns the host (nil
 // if it never answered), the planner's step log, and its verdict.
-func (e *Engine) scanHost(ctx context.Context, ip string) (*model.Host, []model.PlanStep, model.HostVerdict) {
+func (e *Engine) scanHost(ctx context.Context, ip string, portSlots int) (*model.Host, []model.PlanStep, model.HostVerdict) {
 	now := time.Now().UTC()
 	host := &model.Host{
 		IP:    ip,
@@ -235,8 +304,10 @@ func (e *Engine) scanHost(ctx context.Context, ip string) (*model.Host, []model.
 		// set, each answer classified honestly (see probeUDP). No TCP is sent, so a
 		// host proven up here is proven by a real UDP reply or ICMP unreachable —
 		// never by TCP side-effects.
-		for _, port := range e.udpCandidatePorts() {
-			record(e.probeUDP(ctx, ip, port))
+		for _, pr := range probeSeries(ctx, e.udpCandidatePorts(), portSlots, func(c context.Context, port int) probeResult {
+			return e.probeUDP(c, ip, port)
+		}) {
+			record(pr)
 		}
 	case e.opts.Adaptive:
 		for {
@@ -255,8 +326,14 @@ func (e *Engine) scanHost(ctx context.Context, ip string) (*model.Host, []model.
 			})
 		}
 	default:
-		for _, port := range e.candidatePorts() {
-			record(e.probe(ctx, ip, port))
+		// Ports of one host are probed concurrently, bounded by portSlots. The
+		// adaptive branch above stays serial by necessity — each probe's result
+		// is what selects the next one — but the exhaustive sweep has no such
+		// dependency, and serialising it was costing a connect timeout per port.
+		for _, pr := range probeSeries(ctx, e.candidatePorts(), portSlots, func(c context.Context, port int) probeResult {
+			return e.probe(c, ip, port)
+		}) {
+			record(pr)
 		}
 	}
 
@@ -276,7 +353,23 @@ func (e *Engine) scanHost(ctx context.Context, ip string) (*model.Host, []model.
 	if e.opts.Adaptive {
 		top, prob := planner.Verdict()
 		dt := string(top)
-		host.DeviceType = &dt
+		// A device_type is asserted only when the posterior actually reached the
+		// planner's own confidence threshold. When the planner stops on
+		// "no-information" or "risk-budget" the leader can sit near 0.30 — the
+		// least-unlikely class left, not a verdict — and publishing that as a
+		// bare label reads downstream as a scored classification it never was.
+		// Withholding it also lets the Python weighted-signal classifier (B5),
+		// which sees vendor/hostname/OS evidence this planner never does, run
+		// instead of being short-circuited by a weak label. Label and confidence
+		// travel together or not at all: a null confidence is not the same claim
+		// as "confidence 0".
+		if top != adaptive.Unknown && prob >= planner.Threshold() {
+			host.DeviceType = &dt
+			host.DeviceTypeConfidence = model.Ptr(round(prob))
+		}
+		// The plan report keeps the raw posterior regardless: it is the audit
+		// trail of what the planner believed, and it carries its own confidence
+		// and stopped_by, so a weak leader there cannot pass for a verdict.
 		verdict = model.HostVerdict{
 			IP: ip, Class: dt, Confidence: round(prob),
 			Probes: planner.Probes(), StoppedBy: stopReason(planner),
@@ -286,11 +379,34 @@ func (e *Engine) scanHost(ctx context.Context, ip string) (*model.Host, []model.
 }
 
 func (e *Engine) candidatePorts() []int {
-	if len(e.opts.Ports) > 0 {
-		return e.opts.Ports
+	ports := e.opts.Ports
+	if len(ports) == 0 {
+		// Same default high-signal set the Python A3 sweep uses.
+		ports = []int{80, 443, 22, 445, 3389, 139, 135, 8080, 23, 53}
 	}
-	// Same default high-signal set the Python A3 sweep uses.
-	return []int{80, 443, 22, 445, 3389, 139, 135, 8080, 23, 53}
+	return e.allowedPorts(ports)
+}
+
+// allowedPorts applies the two limits an operator can write down but that the
+// probe loops used to ignore: the scope file's max_ports_per_host, and the
+// budget's per-probe detection-risk ceiling from an explicit --max-detect-risk.
+// Both only ever remove ports, and both keep the caller's order so planning
+// stays deterministic.
+func (e *Engine) allowedPorts(ports []int) []int {
+	out := make([]int, 0, len(ports))
+	for _, port := range ports {
+		if !e.budget.AllowProbeRisk(adaptive.PortRisk(port)) {
+			continue
+		}
+		out = append(out, port)
+		// max_ports_per_host is a scope-file limit, so it is enforced here in
+		// the probe path rather than merely parsed: a truncated list is the
+		// only thing that actually keeps packets off the wire.
+		if limit := e.guard.MaxPortsPerHost; limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
 
 // probe performs one budgeted, scope-checked TCP connect. Scope is re-checked
@@ -299,6 +415,12 @@ func (e *Engine) candidatePorts() []int {
 func (e *Engine) probe(ctx context.Context, ip string, port int) probeResult {
 	pr := probeResult{port: port, proto: "tcp", state: model.PortFiltered, source: "A3"}
 	if !e.guard.InScope(ip) || !e.budget.CanSend() {
+		return pr
+	}
+	// Re-check the per-probe risk ceiling here too, for the same reason scope is
+	// re-checked: a bug upstream that let a too-loud port through the candidate
+	// filter must still not put a packet on the wire.
+	if !e.budget.AllowProbeRisk(adaptive.PortRisk(port)) {
 		return pr
 	}
 	if err := e.budget.Acquire(ctx); err != nil {

@@ -4,6 +4,13 @@
 // Intensity (how loud) stays strictly separate from verbosity (how chatty).
 // PASSIVE mode, or MaxDetectRisk 0, means zero active packets — full stop. The
 // budget is the single source of truth every probe path consults before sending.
+//
+// MaxDetectRisk is graded, not binary. When the operator sets it explicitly it
+// becomes MaxProbeRisk: a ceiling on the detection risk of any single probe, on
+// the same 1..10 scale the adaptive planner prices ports with (443 costs 1, 445
+// costs 8, an ICS port costs 9). So --max-detect-risk 3 on an ordinary
+// non-adaptive scan really does refuse the loud probes that
+// --max-detect-risk 9 permits, rather than the two being indistinguishable.
 package budget
 
 import (
@@ -74,6 +81,14 @@ type Budget struct {
 	RatePPS        int
 	MaxPackets     int
 	DetectRisk     int
+	// MaxProbeRisk is the per-probe detection-risk ceiling, on the same 1..10
+	// scale the adaptive planner costs ports with. It is set only when the
+	// operator typed --max-detect-risk: the value then grades which probes may
+	// be sent at all, instead of being a bare probe/don't-probe switch. Zero
+	// means "no per-probe ceiling", which is what a mode preset alone implies —
+	// a preset tunes timing and concurrency, it does not silently prune the
+	// operator's port list.
+	MaxProbeRisk float64
 
 	mu       sync.Mutex
 	sent     int
@@ -95,8 +110,12 @@ func New(o Options) *Budget {
 	}
 
 	risk := profile.risk
+	probeRisk := 0.0
 	if o.MaxDetectRisk != nil {
 		risk = *o.MaxDetectRisk
+		// Explicit flag: the number is a ceiling on how loud any single probe
+		// may be, not just a gate on whether to probe at all.
+		probeRisk = float64(risk)
 	}
 	allowActive := profile.active && risk > 0
 
@@ -126,6 +145,7 @@ func New(o Options) *Budget {
 		RatePPS:        o.RatePPS,
 		MaxPackets:     o.MaxPackets,
 		DetectRisk:     risk,
+		MaxProbeRisk:   probeRisk,
 	}
 	b.slots = make(chan struct{}, max(1, concurrency))
 	return b
@@ -146,33 +166,52 @@ func (b *Budget) CanSend() bool {
 // counts one packet against the budget. The lock is held across the wait on
 // purpose: the delay is a global pacing guarantee, not a per-goroutine one, so
 // serialising here is what makes the observable packet rate match the template.
+//
+// Releasing the mutex before sleeping would be a safety defect, not an
+// optimisation: N goroutines would each read the same lastSend, compute the
+// same wait, sleep in parallel and then fire together, so the gap would bind
+// only the batch and the wire would see one packet per goroutine per gap
+// (at -T2, eight; at --threads 64, sixty-four) instead of one. This mirrors
+// the Python StealthBudget.throttle, which holds its asyncio lock across the
+// await for exactly the same reason.
 func (b *Budget) Throttle(ctx context.Context) error {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	gap := b.Delay
 	if b.RatePPS > 0 {
 		if perPacket := time.Second / time.Duration(b.RatePPS); perPacket > gap {
 			gap = perPacket
 		}
 	}
-	var wait time.Duration
 	if !b.lastSend.IsZero() && gap > 0 {
-		wait = gap - time.Since(b.lastSend)
-	}
-	if wait > 0 {
-		timer := time.NewTimer(wait)
-		defer timer.Stop()
-		b.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
+		if wait := gap - time.Since(b.lastSend); wait > 0 {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+			}
 		}
-		b.mu.Lock()
 	}
 	b.lastSend = time.Now()
 	b.sent++
-	b.mu.Unlock()
 	return nil
+}
+
+// AllowProbeRisk reports whether a probe carrying the given detection risk is
+// within the budget's per-probe ceiling. With no explicit --max-detect-risk the
+// ceiling is unset and every probe the mode already allows is permitted, so this
+// only ever narrows a scan — it can never authorise a probe CanSend forbids.
+func (b *Budget) AllowProbeRisk(risk float64) bool {
+	if !b.AllowActive {
+		return false
+	}
+	if b.MaxProbeRisk <= 0 {
+		return true
+	}
+	return risk <= b.MaxProbeRisk
 }
 
 // Acquire takes a concurrency slot, blocking until one frees or ctx ends.

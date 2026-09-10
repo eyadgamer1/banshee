@@ -15,6 +15,7 @@ from __future__ import annotations
 import ipaddress
 
 from pydantic import BaseModel, Field
+from rich.markup import escape
 
 from scanner.core.models import ConfidenceTier, Host, PortState, ScanResult, Service
 
@@ -117,11 +118,20 @@ def _unconfirmed(tier: ConfidenceTier | None) -> str:
 
 
 def _svc_label(s: Service) -> str:
+    """Console label for a service.
+
+    The service name/product/version are host-controlled strings (they come out
+    of a banner), so they are markup-escaped here: an unescaped `[/dim]` or
+    `[black on black]` in a banner would otherwise restyle or blank the rest of
+    the line and let a scanned host forge or hide rows in the analyst's diff.
+    The "unconfirmed" marker appended afterwards is our own literal and is
+    already escaped by `_unconfirmed`.
+    """
     ident = _identity(s)
-    name = s.name or "?"
+    name = escape(s.name or "?")
     if not ident:
         return f"{s.port}/{s.proto.value} {name}"
-    return f"{s.port}/{s.proto.value} {name} ({ident}){_unconfirmed(s.version_confidence)}"
+    return f"{s.port}/{s.proto.value} {name} ({escape(ident)}){_unconfirmed(s.version_confidence)}"
 
 
 def render_diff(diff: ScanDiff, console) -> None:  # type: ignore[no-untyped-def]
@@ -135,20 +145,21 @@ def render_diff(diff: ScanDiff, console) -> None:  # type: ignore[no-untyped-def
     for h in diff.new_hosts:
         opens = [s for s in h.services if s.state == PortState.OPEN]
         detail = ", ".join(_svc_label(s) for s in opens) or "no open ports"
-        console.print(f"[green]+ new host[/green] {h.ip}  [dim]({detail})[/dim]")
+        console.print(f"[green]+ new host[/green] {escape(h.ip)}  [dim]({detail})[/dim]")
 
     for h in diff.gone_hosts:
-        console.print(f"[red]- gone host[/red] {h.ip}")
+        console.print(f"[red]- gone host[/red] {escape(h.ip)}")
 
     for hd in diff.host_diffs:
-        console.print(f"[bold]~ {hd.ip}[/bold]")
+        console.print(f"[bold]~ {escape(hd.ip)}[/bold]")
         for s in hd.opened:
             console.print(f"    [green]+ opened[/green] {_svc_label(s)}")
         for s in hd.closed:
             console.print(f"    [red]- closed[/red] {_svc_label(s)}")
         for c in hd.changed:
-            old = f"{c.old or '?'}{_unconfirmed(c.old_version_confidence)}"
-            new = f"{c.new or '?'}{_unconfirmed(c.new_version_confidence)}"
+            old = f"{escape(c.old or '?')}{_unconfirmed(c.old_version_confidence)}"
+            new = f"{escape(c.new or '?')}{_unconfirmed(c.new_version_confidence)}"
             console.print(
-                f"    [yellow]~ changed[/yellow] {c.port}/{c.proto}  {old} [dim]->[/dim] {new}"
+                f"    [yellow]~ changed[/yellow] {c.port}/{escape(c.proto)}  "
+                f"{old} [dim]->[/dim] {new}"
             )

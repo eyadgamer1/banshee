@@ -150,6 +150,10 @@ type Options struct {
 	MinBits float64
 	// Ports restricts the candidate set. Empty means every port in the model.
 	Ports []int
+	// MaxPortRisk drops candidates whose per-probe detection risk exceeds it,
+	// which is how an explicit --max-detect-risk narrows what the planner is
+	// even allowed to consider. 0 means no ceiling.
+	MaxPortRisk float64
 }
 
 func (o Options) withDefaults() Options {
@@ -190,6 +194,15 @@ func New(o Options) *Planner {
 			p.candidates = append(p.candidates, port)
 		}
 	}
+	if o.MaxPortRisk > 0 {
+		kept := p.candidates[:0]
+		for _, port := range p.candidates {
+			if portRisk(port) <= o.MaxPortRisk {
+				kept = append(kept, port)
+			}
+		}
+		p.candidates = kept
+	}
 	sort.Ints(p.candidates)
 	if p.opts.MaxProbes <= 0 {
 		p.opts.MaxProbes = len(p.candidates)
@@ -215,6 +228,11 @@ func portRisk(port int) float64 {
 	}
 	return riskDefault
 }
+
+// PortRisk is the detection cost of probing a port, on the same 1..10 scale the
+// planner budgets with. Exported so the non-adaptive probe path prices probes
+// with the identical table rather than inventing a second, drifting one.
+func PortRisk(port int) float64 { return portRisk(port) }
 
 func entropy(dist map[Class]float64) float64 {
 	var h float64
@@ -359,8 +377,14 @@ func (p *Planner) Verdict() (Class, float64) {
 }
 
 func (p *Planner) Confidence() float64 { _, c := p.Verdict(); return c }
-func (p *Planner) Probes() int         { return p.probes }
-func (p *Planner) SpentRisk() float64  { return p.spentRisk }
+
+// Threshold is the posterior probability at which this planner calls a class,
+// after defaults are applied. A caller that wants to know whether a verdict was
+// actually earned — rather than merely being the least-unlikely class left when
+// the planner ran out of budget — compares Confidence() against this.
+func (p *Planner) Threshold() float64 { return p.opts.Confidence }
+func (p *Planner) Probes() int        { return p.probes }
+func (p *Planner) SpentRisk() float64 { return p.spentRisk }
 
 // Posterior returns a copy of the current belief, for reporting.
 func (p *Planner) Posterior() map[Class]float64 {

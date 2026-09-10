@@ -88,8 +88,11 @@ def _safe_search(pattern: str, text: str) -> bool:
 
 def _matches(host: Host, match: dict[str, Any]) -> bool:
     """Return True if host satisfies all conditions in the match block."""
-    # Port match (ANY)
-    required_ports: list[int] = match.get("open_ports") or []
+    # Port match (ANY). `or []` also covers a bare `open_ports:` key (null value).
+    required_ports = match.get("open_ports") or []
+    if not isinstance(required_ports, list):
+        log.warning("plugin rule: 'open_ports' must be a list — condition ignored")
+        required_ports = []
     if required_ports and not any(p in host.open_ports for p in required_ports):
         return False
 
@@ -131,10 +134,28 @@ def apply_rules(result: ScanResult, rules: list[dict[str, Any]]) -> int:
         "potential": ConfidenceTier.POTENTIAL,
     }
 
+    # A rule file may carry a bare `match:` key (present, value null) or a
+    # non-mapping value; `rule.get("match", {})` returns that None/str straight
+    # through and `_matches` then calls `.get` on it, crashing the whole scan
+    # with an AttributeError after packets have been sent and before any report
+    # is written. Normalise once, up front: an unusable match block is a rule
+    # authoring error, so the rule is skipped with a warning, not fatal.
+    usable: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for rule in rules:
+        block = rule.get("match")
+        if block is None:
+            block = {}
+        if not isinstance(block, dict):
+            log.warning(
+                "plugin rule %s: 'match' must be a mapping (got %s) — rule ignored",
+                rule.get("id", "?"), type(block).__name__,
+            )
+            continue
+        usable.append((rule, block))
+
     added = 0
     for host in result.hosts:
-        for rule in rules:
-            match_block = rule.get("match", {})
+        for rule, match_block in usable:
             if not _matches(host, match_block):
                 continue
             finding_id = f"PLUG-{rule['id']}-{host.ip.replace('.', '_')}"

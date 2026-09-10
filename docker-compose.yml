@@ -6,7 +6,7 @@ services:
     image: banshee-scanner:latest
     container_name: banshee
 
-    # Raw socket access for passive sniffing and ICMP
+    # Raw socket access for ICMP discovery and TCP/IP-stack fingerprinting
     cap_add:
       - NET_RAW
       - NET_ADMIN

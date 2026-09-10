@@ -11,6 +11,18 @@ are not set. Falls back to the E4-lite spinner when Live is unavailable.
 Usage:
     with live_dashboard(console, cfg, enabled=True) as hook:
         result = await engine.run(cfg)
+
+Progress-event contract (consumer side is tolerant — every field but `ip` is
+optional, and a missing one simply leaves that column blank):
+
+    scope        {in_scope, out_of_scope}
+    host         {ip, state}                     — optional: name, ports
+    fingerprint  {ip, by}                        — optional: name, os, ports
+    host_done    {ip}                            — optional: services, findings
+    done         {hosts_up}                      — run-level, carries no `ip`
+
+`os`/`ports`/`services`/`findings` are not emitted by `core/engine.py` today, so
+those columns stay empty until it does; see that module for the change needed.
 """
 
 from __future__ import annotations
@@ -23,6 +35,7 @@ from typing import TYPE_CHECKING
 from rich.box import SIMPLE_HEAVY
 from rich.layout import Layout
 from rich.live import Live
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -75,9 +88,13 @@ def _host_table(hosts: dict[str, dict[str, object]]) -> Table:
         style = _STATUS_STYLE.get(status, "white")
         fnd = int(str(h.get("findings", 0) or 0))
         fnd_txt = f"[red]{fnd}[/red]" if fnd else "[dim]0[/dim]"
+        # name/os/ports are host-controlled (DHCP/mDNS/NBSTAT names, banner-derived
+        # OS strings). rich renders a str cell as markup, so an advertised name of
+        # `[black on black]` or `[/dim]` would restyle or blank this row — escape
+        # everything the scanned host supplies. `escape` is a no-op on plain text.
         table.add_row(
-            ip, str(h.get("name", "")), str(h.get("os", "")),
-            str(h.get("ports", "")), fnd_txt, f"[{style}]{status}[/]",
+            escape(ip), escape(str(h.get("name", ""))), escape(str(h.get("os", ""))),
+            escape(str(h.get("ports", ""))), fnd_txt, f"[{style}]{escape(status)}[/]",
         )
     return table
 
@@ -131,30 +148,66 @@ def live_dashboard(
         )
         layout["stats"].update(Panel(_stats_bar(stats, frame), border_style="dim"))
 
+    def _row(ip: str) -> dict[str, object]:
+        row = hosts.get(ip)
+        if row is None:
+            row = {
+                "status": "discovering", "name": "", "os": "", "ports": "",
+                "services": 0, "findings": 0,
+            }
+            hosts[ip] = row
+        return row
+
+    def _apply(ip: str, fields: dict[str, object]) -> None:
+        """Fold whatever detail an event happens to carry into the host's row.
+
+        Every field is optional: the engine's current `host`/`fingerprint`
+        payloads carry only `ip` (plus `state`/`by`), so the OS/Ports/Findings
+        columns stay blank until the engine starts emitting them. Reading them
+        defensively means the dashboard lights up the moment it does, without a
+        second change here. See the module docstring for the exact payload the
+        engine would need to emit.
+        """
+        row = _row(ip)
+        for key in ("name", "os", "ports"):
+            value = fields.get(key)
+            if value not in (None, ""):
+                row[key] = str(value)
+        for key in ("services", "findings"):
+            value = fields.get(key)
+            if value is not None:
+                with contextlib.suppress(ValueError, TypeError):
+                    row[key] = int(str(value))
+
+    def _recount() -> None:
+        # Totals are recomputed from the per-host rows rather than accumulated,
+        # so a repeated event (fingerprint fires once per fingerprinter) can
+        # never double-count.
+        stats["up"] = len(hosts)
+        stats["services"] = sum(int(str(h.get("services", 0) or 0)) for h in hosts.values())
+        stats["findings"] = sum(int(str(h.get("findings", 0) or 0)) for h in hosts.values())
+
     def hook(event: str, fields: dict[str, object]) -> None:
         ip = str(fields.get("ip", ""))
-        if event == "host":
-            if ip not in hosts:
-                hosts[ip] = {
-                    "status": "discovering", "name": "", "os": "", "ports": "", "findings": 0,
-                }
+        if event == "host" and ip:
+            _apply(ip, fields)
             hosts[ip]["status"] = "up"
-            stats["up"] = len(hosts)
-        elif event == "fingerprint":
-            if ip in hosts:
-                hosts[ip]["status"] = "fingerprinting"
-                if fields.get("os"):
-                    hosts[ip]["os"] = str(fields["os"])
-                if fields.get("ports"):
-                    hosts[ip]["ports"] = str(fields["ports"])
+        elif event == "fingerprint" and ip:
+            _apply(ip, fields)
+            hosts[ip]["status"] = "fingerprinting"
+        elif event == "host_done" and ip:
+            _apply(ip, fields)
+            hosts[ip]["status"] = "done"
         elif event == "done":
-            if ip in hosts:
+            # The engine's end-of-scan `done` carries no `ip` (it is a run-level
+            # event), so it finalises every known host instead of one row.
+            if ip:
+                _apply(ip, fields)
                 hosts[ip]["status"] = "done"
-                hosts[ip]["findings"] = int(str(fields.get("findings", 0)))
-                svc = int(str(stats.get("services", 0))) + int(str(fields.get("services", 0)))
-                fnd = int(str(stats.get("findings", 0))) + int(str(fields.get("findings", 0)))
-                stats["services"] = svc
-                stats["findings"] = fnd
+            else:
+                for row in hosts.values():
+                    row["status"] = "done"
+        _recount()
         _refresh()
 
     _refresh()

@@ -1,10 +1,12 @@
 """Fingerprint module — enriches hosts with identity/service data (B1–B13).
 
 Integration contract: `get_fingerprinters(cfg)` returns ordered Fingerprinter
-instances. Passive enrichers always run; active ones respect budget/flags.
+instances. Local/analytical enrichers (lease-file, OUI table, negative space)
+always run; every enricher that puts a packet on the wire goes through the
+stealth budget. Nothing here captures traffic it did not elicit.
 
 P1: B1 oui, B2 dhcp, B6 name-resolve.
-P2: B3 tcp/ip stack, B4 TLS JA4, B5 device classifier.
+P2: B3 tcp/ip stack, B4 TLS JA4S (active handshake), B5 device classifier.
 P4: B7 clock-skew, B8 negative-space.
 """
 
@@ -43,10 +45,10 @@ def get_fingerprinters(cfg: ScanConfig) -> list[Fingerprinter]:
     fingerprinters: list[Fingerprinter] = [OuiFingerprinter(), DhcpFingerprinter()]
     if cfg.names:
         fingerprinters.append(NameResolver())
-    # B3/B4 raw-socket probes and B7 clock-skew are active; the budget still gates
-    # the actual packets (nothing is sent at max-detect-risk 0).
+    # B3 raw-socket SYN, B4 TLS handshake and B7 clock-skew are active probes;
+    # each throttles through the budget, so nothing is sent at max-detect-risk 0.
     fingerprinters.append(TcpIpFingerprinter())
-    fingerprinters.append(TlsJa4Fingerprinter(iface=cfg.iface))
+    fingerprinters.append(TlsJa4Fingerprinter())
     # B5 classifier is always safe (local, no network)
     if cfg.classify:
         fingerprinters.append(DeviceClassifier())

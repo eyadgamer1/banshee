@@ -22,6 +22,7 @@ returning a silent empty result.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import json
 import logging
@@ -32,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from scanner.core.models import ScanConfig, ScanResult
-from scanner.core.scope import ScopeGuard, ScopeViolationError
+from scanner.core.scope import AuditLog, ScopeGuard, ScopeViolationError
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,65 @@ _EXIT_OK = 0
 _EXIT_NO_TARGETS = 3
 
 _BINARY_NAME = "banshee-engine.exe" if os.name == "nt" else "banshee-engine"
+
+# Overall wall-clock cap on one engine run. An hour is long enough for a
+# legitimate all-ports sweep of a large range at -T1, and finite enough that a
+# black-holed target (the adaptive planner waiting on replies that never come)
+# fails with a diagnostic instead of hanging the CLI forever.
+_DEFAULT_ENGINE_TIMEOUT_S = 3600.0
+# How long a terminated engine gets to exit before it is killed outright.
+_KILL_GRACE_S = 3.0
+
+
+def _engine_timeout() -> float | None:
+    """Wall-clock cap for one engine run, in seconds, or None for no cap.
+
+    `BANSHEE_ENGINE_TIMEOUT` overrides the default; 0 (or negative) disables the
+    cap for the rare operator who really is running a multi-hour sweep.
+    """
+    raw = os.environ.get("BANSHEE_ENGINE_TIMEOUT")
+    if raw is None:
+        return _DEFAULT_ENGINE_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning("ignoring invalid BANSHEE_ENGINE_TIMEOUT=%r; using the default", raw)
+        return _DEFAULT_ENGINE_TIMEOUT_S
+    return None if value <= 0 else value
+
+
+def _signal_stop(proc: asyncio.subprocess.Process, *, force: bool = False) -> None:
+    """Ask the engine to stop (SIGTERM), or force it (SIGKILL) when `force`.
+
+    Synchronous and never raises: it is called while unwinding a cancellation,
+    where an extra `await` may not get a chance to run. A process that already
+    exited is a no-op.
+    """
+    if proc.returncode is not None:
+        return
+    try:
+        if force:
+            proc.kill()
+        else:
+            proc.terminate()
+    except (ProcessLookupError, OSError):  # already gone / already reaped
+        pass
+
+
+async def _stop_engine(proc: asyncio.subprocess.Process) -> None:
+    """Terminate the engine, then kill it if it does not exit promptly, and reap it.
+
+    An orphaned `banshee-engine` keeps putting packets on the wire after the CLI
+    has exited — the operator pressed Ctrl+C precisely to stop that. The waits are
+    shielded so this still runs to completion on the cancellation path.
+    """
+    _signal_stop(proc)
+    with contextlib.suppress(BaseException):
+        await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=_KILL_GRACE_S)
+    if proc.returncode is None:
+        _signal_stop(proc, force=True)
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=_KILL_GRACE_S)
 
 
 def _build_hint() -> str:
@@ -151,13 +211,17 @@ def _lookup_host(name: str) -> list[str]:
     return sorted({str(info[4][0]) for info in infos})
 
 
-async def resolve_targets(targets: list[str]) -> list[str]:
+async def resolve_targets(targets: list[str], audit: AuditLog | None = None) -> list[str]:
     """Resolve hostname targets to IPs so the Go engine gets concrete addresses.
 
     Mirrors the Python engine's behavior (`ScanEngine._resolve`): IP/CIDR/range
     tokens pass through unchanged, hostnames become their resolved IPs, and a name
     that fails to resolve is dropped — exactly as the Python path drops it — so the
     scope contract sees the same target set on either engine.
+
+    `audit` records the same `resolve` / `resolve_fail` events the Python engine
+    writes. Resolution is the only place that knows which name produced which
+    address, so the entry has to be written here rather than by the caller.
     """
     loop = asyncio.get_running_loop()
     out: list[str] = []
@@ -169,9 +233,14 @@ async def resolve_targets(targets: list[str]) -> list[str]:
             out.append(token)
             continue
         try:
-            out.extend(await loop.run_in_executor(None, _lookup_host, token))
+            ips = await loop.run_in_executor(None, _lookup_host, token)
+            out.extend(ips)
+            if audit is not None:
+                audit.log("resolve", host=token, ips=sorted(ips))
         except (socket.gaierror, OSError):
             log.debug("go engine: could not resolve %r; dropping", token)
+            if audit is not None:
+                audit.log("resolve_fail", host=token)
     return out
 
 
@@ -245,6 +314,11 @@ async def run_go_engine(cfg: ScanConfig, guard: ScopeGuard, scope_path: str) -> 
     `scope_path` is the resolved scope file the Python guard was built from; the Go
     engine loads and enforces it independently. `guard` supplies the authorized-use
     banner so the Go and Python paths produce identical report headers.
+
+    `guard.audit` gets the same run lifecycle the Python engine records. The Go
+    engine keeps no audit trail of its own, so without these calls `--audit-log`
+    was silently inert on the default engine — a blocked scan left no record at
+    all, which is exactly when a record matters most.
     """
     binary = find_engine()
 
@@ -252,8 +326,10 @@ async def run_go_engine(cfg: ScanConfig, guard: ScopeGuard, scope_path: str) -> 
     # DNS) receives concrete IPs and can scope-check them. If nothing resolves,
     # return an empty result rather than invoking Go with zero targets — the same
     # outcome the Python engine produces when every name fails to resolve.
-    resolved = await resolve_targets(cfg.targets)
+    resolved = await resolve_targets(cfg.targets, audit=guard.audit)
+    guard.audit.log("scan_start", mode=cfg.mode.value, targets=cfg.targets, engine="go")
     if not resolved:
+        guard.audit.log("scan_done", hosts_up=0, reason="no target resolved")
         return ScanResult(config=cfg, banner=guard.banner)
 
     args = build_args(cfg, scope_path, resolved)
@@ -273,7 +349,23 @@ async def run_go_engine(cfg: ScanConfig, guard: ScopeGuard, scope_path: str) -> 
             f"could not run banshee-engine at {binary!r} ({exc}); check it is the right "
             "platform build and is executable"
         ) from exc
-    stdout, stderr = await proc.communicate()
+    # The child is a live scanner: nothing may leave this block without it being
+    # dead. Ctrl+C raises CancelledError right here, and without the handler below
+    # `banshee` would exit while banshee-engine kept scanning the target.
+    timeout = _engine_timeout()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        await _stop_engine(proc)
+        raise RuntimeError(
+            f"banshee-engine did not finish within {timeout:.0f}s and was stopped. "
+            "The target may be black-holing probes; narrow the target/port set, "
+            "raise the cap with BANSHEE_ENGINE_TIMEOUT (seconds, 0 = no cap), "
+            "or drop --adaptive."
+        ) from None
+    except BaseException:  # Ctrl+C (CancelledError/KeyboardInterrupt) and anything else
+        await _stop_engine(proc)
+        raise
     err_text = stderr.decode("utf-8", "replace").strip()
 
     if proc.returncode not in (_EXIT_OK, _EXIT_NO_TARGETS):
@@ -294,10 +386,14 @@ async def run_go_engine(cfg: ScanConfig, guard: ScopeGuard, scope_path: str) -> 
     # scope is an attempt to scan unauthorized hosts — refuse loudly, don't return
     # a silent empty result. The CLI maps this to exit code 3, same as the Python path.
     if cfg.targets and int(stats.get("targets_in_scope", 0)) == 0:
+        guard.audit.log("scope_violation", out_of_scope=resolved[:10], engine="go")
         raise ScopeViolationError(
             ", ".join(cfg.targets[:3]) + ("..." if len(cfg.targets) > 3 else ""),
             "no requested target is inside the scope allowlist",
         )
+    out_of_scope = int(stats.get("targets_requested", 0)) - int(stats.get("targets_in_scope", 0))
+    if out_of_scope > 0:
+        guard.audit.log("scope_filtered_out", count=out_of_scope, engine="go")
 
     kwargs: dict[str, Any] = {
         "config": cfg,  # Python keeps its own resolved config, not Go's slice
@@ -311,5 +407,12 @@ async def run_go_engine(cfg: ScanConfig, guard: ScopeGuard, scope_path: str) -> 
         kwargs["finished_at"] = data["finished_at"]
     if data.get("plan"):  # adaptive audit trail — present only with -adaptive
         kwargs["plan"] = data["plan"]
+
+    # Terminal event, mirroring the Python engine: a dry run records what it
+    # would have scanned, a real run records what it found.
+    if cfg.dry_run:
+        guard.audit.log("dry_run", planned=int(stats.get("targets_in_scope", 0)), engine="go")
+    else:
+        guard.audit.log("scan_done", hosts_up=int(stats.get("hosts_up", 0)), engine="go")
 
     return ScanResult(**kwargs)

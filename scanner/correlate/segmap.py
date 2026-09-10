@@ -1,10 +1,12 @@
 """C2 — Network segmentation map.
 
-Groups discovered hosts into logical segments based on subnet membership,
-then identifies inter-segment edges (hosts that bridge segments via multiple
-IPs or services reachable from other segments).
+Groups discovered hosts into logical segments based on subnet membership, then
+identifies bridge hosts: hosts *observed* on more than one segment, i.e. the same
+MAC answering at two IPs in different networks.
 
 Segments are derived deterministically from IP/prefix — no LLM, no packets.
+`group_by_segment` is the shared primitive: correlate/graph.py uses it so the
+attack graph and this map agree on what "same segment" means.
 
 Output: SegmentMap with segments + bridge hosts + a finding per bridge.
 """
@@ -13,6 +15,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -57,50 +60,104 @@ def _best_prefix(ips: list[str]) -> int:
     return 24
 
 
+def _segment_key(ip: str, prefix: int) -> str:
+    try:
+        return str(ipaddress.ip_interface(f"{ip}/{prefix}").network)
+    except ValueError:
+        return "unknown"
+
+
+def group_by_segment(ips: Sequence[str]) -> dict[str, list[str]]:
+    """{segment network: [ip, ...]} using the shared prefix heuristic.
+
+    Pure — attaches nothing and mutates nothing, so another correlator can ask
+    "are these two hosts on the same segment?" without triggering C2 findings.
+    """
+    prefix = _best_prefix(list(ips))
+    groups: dict[str, list[str]] = {}
+    for ip in ips:
+        groups.setdefault(_segment_key(ip, prefix), []).append(ip)
+    return groups
+
+
+def segment_of(ips: Sequence[str]) -> dict[str, str]:
+    """{ip: segment network} for every IP in `ips`."""
+    return {ip: net for net, members in group_by_segment(ips).items() for ip in members}
+
+
 def build_segment_map(result: ScanResult) -> SegmentMap:
     """Build the segmentation map and attach bridge findings to hosts."""
     ips = [h.ip for h in result.hosts]
     if not ips:
         return SegmentMap()
 
-    prefix = _best_prefix(ips)
-    seg_map: dict[str, Segment] = {}
+    groups = group_by_segment(ips)
+    segments = sorted(
+        (Segment(network=net, hosts=list(members)) for net, members in groups.items()),
+        key=lambda s: s.network,
+    )
+    seg_of = {ip: net for net, members in groups.items() for ip in members}
 
+    # A bridge is a host OBSERVED on more than one segment: one MAC answering at
+    # two IPs that land in different networks. That is the "host with multiple
+    # IPs" criterion this module always documented but never implemented. The old
+    # code instead flagged any host the classifier labelled router / access-point
+    # / "switch" — "switch" is not a label the classifier can emit (dead branch),
+    # and a single-homed router was asserted as a bridge at PROBABLE on
+    # classification alone, an observation the scan never made.
+    by_mac: dict[str, set[str]] = {}
     for host in result.hosts:
-        try:
-            net = str(ipaddress.ip_interface(f"{host.ip}/{prefix}").network)
-        except ValueError:
-            net = "unknown"
-        if net not in seg_map:
-            seg_map[net] = Segment(network=net)
-        seg_map[net].hosts.append(host.ip)
+        if host.mac:
+            by_mac.setdefault(host.mac.lower(), set()).add(host.ip)
 
-    segments = sorted(seg_map.values(), key=lambda s: s.network)
+    peers: dict[str, list[str]] = {}
+    for addrs in by_mac.values():
+        if len(addrs) < 2 or len({seg_of.get(ip, "unknown") for ip in addrs}) < 2:
+            continue
+        for ip in addrs:
+            peers[ip] = sorted(addrs - {ip})
+    bridges = sorted(peers)
 
-    # A bridge host appears in multiple segments (multi-homed or routed)
-    # For now: hosts with multiple IPs in names dict or gateway-like device types
-    bridges: list[str] = []
-    gateway_types = {"router", "switch", "access-point"}
-    for host in result.hosts:
-        if host.device_type in gateway_types:
-            bridges.append(host.ip)
-
-    # Attach findings to bridges (idempotent — guard against duplicate C2 findings)
     from scanner.core.models import ConfidenceTier, Finding, Severity
-    bridge_set = set(bridges)
+
+    # Findings are idempotent — guard against a duplicate C2 finding on re-run.
+    gateway_types = {"router", "access-point"}
     for host in result.hosts:
-        if host.ip in bridge_set:
+        if host.ip in peers:
             finding_id = f"C2-bridge-{host.ip.replace('.', '_')}"
             if any(f.id == finding_id for f in host.findings):
                 continue
+            other = ", ".join(peers[host.ip])
             host.findings.append(Finding(
-                id=f"C2-bridge-{host.ip.replace('.', '_')}",
-                title=f"Segment bridge: {host.device_type} spans network boundary",
+                id=finding_id,
+                title="Segment bridge: same MAC observed on two segments",
                 severity=Severity.MEDIUM,
                 confidence=ConfidenceTier.PROBABLE,
                 description=(
-                    f"{host.ip} ({host.device_type}) acts as a bridge between "
-                    f"{len(segments)} detected segments. Compromise enables lateral movement."
+                    f"{host.ip} shares MAC {host.mac} with {other}, which falls in a "
+                    f"different segment of the {len(segments)} detected. A multi-homed "
+                    "host spans the boundary, so compromising it can enable lateral "
+                    "movement between those segments."
+                ),
+                evidence=f"mac={host.mac} also_seen_at={other}",
+                source="C2",
+            ))
+        elif host.device_type in gateway_types:
+            # Classification only. The scan saw one interface, so it cannot claim
+            # this device bridges anything — it is a lead to check, at POTENTIAL.
+            finding_id = f"C2-gateway-{host.ip.replace('.', '_')}"
+            if any(f.id == finding_id for f in host.findings):
+                continue
+            host.findings.append(Finding(
+                id=finding_id,
+                title=f"Gateway-class device ({host.device_type})",
+                severity=Severity.LOW,
+                confidence=ConfidenceTier.POTENTIAL,
+                description=(
+                    f"{host.ip} is classified as a {host.device_type}, a device class that "
+                    "usually connects segments. Only one interface was observed, so this "
+                    "scan did not confirm it bridges any of the "
+                    f"{len(segments)} detected segments — verify on the device itself."
                 ),
                 source="C2",
             ))

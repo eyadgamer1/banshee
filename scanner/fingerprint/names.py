@@ -4,11 +4,18 @@ Every method here puts a packet on the wire, so each is gated by the budget:
 when the budget forbids active probes (``can_send()`` False) this fingerprinter is a complete no-op.
 
   * reverse DNS — the portable workhorse, via the system resolver.
-  * mDNS        — best-effort reverse PTR over 224.0.0.251:5353 (link-local).
+  * mDNS        — best-effort reverse PTR, sent *unicast* to the target's own
+                  UDP 5353. Never to the 224.0.0.251 group: multicast would
+                  touch every host on the segment, including addresses the
+                  allowlist never authorized.
   * NetBIOS     — best-effort node-status (NBSTAT) over UDP 137 (Windows LANs).
 
-The mDNS/NetBIOS wire codecs are pure functions (unit-tested); their live socket
-paths are wrapped to fail soft, since neither is guaranteed on any given network.
+Every UDP reply is accepted only when its source address is the target itself,
+so no other machine's answer can be attributed to (or raise the confidence of)
+the host being scanned.
+
+The mDNS/NetBIOS wire codecs are pure functions; their live socket paths are
+wrapped to fail soft, since neither is guaranteed on any given network.
 """
 
 from __future__ import annotations
@@ -24,10 +31,12 @@ if TYPE_CHECKING:
     from scanner.core.interfaces import ScanContext
     from scanner.core.models import Host
 
-_MDNS_ADDR = ("224.0.0.251", 5353)
+_MDNS_PORT = 5353
 _NETBIOS_PORT = 137
 _DNS_PTR = 12
 _DNS_IN = 1
+# Cap on compression-pointer jumps while decoding a DNS name (see decode_name).
+_MAX_NAME_JUMPS = 16
 _NBSTAT_TYPE = 0x0021
 _NB_QUESTION_LEN = 34  # 0x20 length byte + 32 encoded bytes + 0x00 terminator
 
@@ -48,20 +57,36 @@ def encode_qname(name: str) -> bytes:
 
 
 def decode_name(data: bytes, offset: int) -> tuple[str, int]:
-    """Decode a (possibly compressed) DNS name; return (name, offset-after-name)."""
+    """Decode a (possibly compressed) DNS name; return (name, offset-after-name).
+
+    Hostile input is the norm here: the reply comes from whatever box answered
+    the probe. A compression pointer that targets itself (``0xC0 0x0C`` at
+    offset 12) or a pair of pointers targeting each other would otherwise spin
+    this loop forever — a remote DoS, since decoding runs inline on the event
+    loop. Two independent guards stop that: a cap on how many pointers we
+    chase (RFC-standard practice) and a set of already-visited offsets, so any
+    cycle — pointer or otherwise — terminates on its second visit. A truncated
+    or looping name decodes to whatever labels were read before the bail-out.
+    """
     labels: list[str] = []
     pos = offset
     end = offset
     jumped = False
+    jumps = 0
+    seen: set[int] = set()
     while pos < len(data):
+        if pos in seen:  # already decoded from here — cycle, bail out
+            break
+        seen.add(pos)
         length = data[pos]
         if length & 0xC0 == 0xC0:  # compression pointer
-            if pos + 1 >= len(data):
+            if pos + 1 >= len(data) or jumps >= _MAX_NAME_JUMPS:
                 break
             if not jumped:
                 end = pos + 2
             pos = ((length & 0x3F) << 8) | data[pos + 1]
             jumped = True
+            jumps += 1
             continue
         if length == 0:
             if not jumped:
@@ -170,13 +195,29 @@ async def _reverse_dns(ip: str, timeout: float) -> str | None:
 
 
 async def _udp_query(packet: bytes, addr: tuple[str, int], timeout: float) -> bytes | None:
+    """Send `packet` to `addr`; return the first reply *from that same host*.
+
+    The source address is checked, not discarded. A name lifted from some
+    other machine's datagram would be attributed to the target (and would
+    promote its confidence tier on the strength of a stranger's answer), so
+    replies from any other address are dropped and we keep waiting until the
+    timeout rather than trusting the first packet that arrives.
+    """
     loop = asyncio.get_running_loop()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.setblocking(False)
         await loop.sock_sendto(sock, packet, addr)
-        data, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, 2048), timeout=timeout)
-        return data
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            data, src = await asyncio.wait_for(
+                loop.sock_recvfrom(sock, 2048), timeout=remaining
+            )
+            if src[0] == addr[0]:
+                return data
     except (TimeoutError, OSError):
         return None
     finally:
@@ -221,7 +262,15 @@ class NameResolver:
 
     @staticmethod
     async def _mdns(ip: str, timeout: float) -> str | None:
-        resp = await _udp_query(build_ptr_query(reverse_ptr_name(ip)), _MDNS_ADDR, timeout)
+        """Unicast reverse-PTR query to the target's own mDNS port.
+
+        Deliberately *not* sent to the 224.0.0.251 multicast group: that puts a
+        datagram in front of every machine on the segment, none of which the
+        allowlist authorized, and it invites answers from hosts we are not
+        scanning. A unicast query to the in-scope target only reaches the
+        target, and `_udp_query` accepts a reply only from that same address.
+        """
+        resp = await _udp_query(build_ptr_query(reverse_ptr_name(ip)), (ip, _MDNS_PORT), timeout)
         return parse_first_ptr(resp) if resp else None
 
     @staticmethod

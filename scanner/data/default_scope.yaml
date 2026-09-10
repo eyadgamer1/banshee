@@ -14,5 +14,9 @@ allowlist:
 # allowlist). Empty by default.
 denylist: []
 
-max_hosts_per_scan: 1048576
+# Ceiling on how many addresses one invocation may expand to. 65536 is a full
+# /16 — generous, but it still refuses a fat-fingered /12 (1,048,576 addresses)
+# instead of materialising a million IP strings. Raise it deliberately if you
+# really mean to sweep something larger.
+max_hosts_per_scan: 65536
 max_ports_per_host: 65535

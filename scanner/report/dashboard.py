@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
 from rich.box import SIMPLE_HEAVY
+from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
@@ -42,7 +43,19 @@ _SEV_STYLE: dict[str, str] = {
 
 
 def _tier(value: str) -> str:
-    return f"[{_TIER_STYLE.get(value, 'white')}]{value}[/]"
+    return f"[{_TIER_STYLE.get(value, 'white')}]{escape(value)}[/]"
+
+
+def _cell(value: object) -> str:
+    """Markup-escape a host-derived cell before it reaches rich.
+
+    `Table.add_row` renders a `str` cell as console markup, so a device that
+    advertises a DHCP/mDNS hostname (or banner-derived vendor/OS string) of
+    `[black on black]` or `[/dim]` would otherwise restyle or blank its own row
+    in the analyst's report. Everything the scanned host controls goes through
+    here; our own literal style tags are written around it.
+    """
+    return escape("" if value is None else str(value))
 
 
 def render_result(
@@ -78,12 +91,12 @@ def render_result(
     for host in result.hosts:
         ports = ", ".join(str(p) for p in host.open_ports) or "-"
         table.add_row(
-            host.ip,
-            host.best_name,
-            host.mac or "",
-            host.vendor or "",
-            host.os_guess or "",
-            ports,
+            _cell(host.ip),
+            _cell(host.best_name),
+            _cell(host.mac or ""),
+            _cell(host.vendor or ""),
+            _cell(host.os_guess or ""),
+            _cell(ports),
             _tier(host.confidence.value),
         )
     console.print(table)
@@ -110,7 +123,10 @@ def _render_plan(console: Console, result: ScanResult) -> None:
         table.add_column(column, overflow="fold")
     for verdict in plan.verdicts:
         table.add_row(
-            verdict.ip, verdict.device_class, f"{verdict.confidence:.3f}", verdict.stopped_by
+            _cell(verdict.ip),
+            _cell(verdict.device_class),
+            f"{verdict.confidence:.3f}",
+            _cell(verdict.stopped_by),
         )
     console.print(table)
 
@@ -125,9 +141,9 @@ def _render_findings(console: Console, result: ScanResult) -> None:
     for host, finding in rows:
         sev = finding.severity.value
         table.add_row(
-            host.ip,
-            f"[{_SEV_STYLE.get(sev, 'white')}]{sev}[/]",
-            finding.title,
+            _cell(host.ip),
+            f"[{_SEV_STYLE.get(sev, 'white')}]{escape(sev)}[/]",
+            _cell(finding.title),
             _tier(finding.confidence.value),
         )
     console.print(table)
@@ -163,10 +179,16 @@ def live_status(console: Console, *, enabled: bool) -> Iterator[ProgressHook]:
         elif event == "host":
             counters["up"] += 1
             progress.update(
-                task, description=f"discovering... {counters['up']} up (last {fields.get('ip')})"
+                task,
+                description=(
+                    f"discovering... {counters['up']} up "
+                    f"(last {escape(str(fields.get('ip', '')))})"
+                ),
             )
         elif event == "fingerprint":
-            progress.update(task, description=f"fingerprinting {fields.get('ip')}")
+            progress.update(
+                task, description=f"fingerprinting {escape(str(fields.get('ip', '')))}"
+            )
         elif event == "done":
             progress.update(task, description="finalizing report")
 

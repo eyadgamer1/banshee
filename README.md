@@ -65,7 +65,7 @@ It is built for ethical hackers and defenders who care about two things most sca
 | **Result honesty** | "Open" with no provenance | `CONFIRMED / PROBABLE / POTENTIAL` tiers, never fabricated |
 | **Detection cost** | Not measured | Per-port risk weighting; cap it with a budget |
 | **Adaptive probing** | Static top-ports list | Bayesian per-host probe selection (Go engine) |
-| **Fingerprinting** | Banner grab | Passive TCP/IP stack, TLS/JA4, DHCP, clock-skew, OUI |
+| **Fingerprinting** | Banner grab | TCP/IP stack, TLS JA4S, DHCP, clock-skew, OUI |
 | **Deployment** | `pip install` + runtime | Also a single static Go binary you `scp` onto a jump box |
 | **Reporting** | One or two formats | TXT · JSON · XML · HTML · CSV · SARIF 2.1.0 + SQLite history |
 
@@ -87,7 +87,7 @@ built-in default scope, Python and Go set up together in one atomic sequence
 If the Go fetch fails (offline, unsupported platform) `banshee` still works
 fully via `--engine python`; nothing above is fatal to the install.
 
-> **Requirements:** Python **3.12+**. The active TCP-connect sweep needs **no privileges** and never prompts for one. Raw-socket fingerprinting (`-i`/`--iface`, TLS JA4) auto-elevates through your OS's own **`sudo`** (Linux/macOS) or **UAC** (Windows) prompt the moment you pass `-i` — never a BANSHEE-owned password field. Windows also needs **[Npcap](https://npcap.com)** (WinPcap-compatible mode) for that capture to actually work once elevated.
+> **Requirements:** Python **3.12+**. The active TCP-connect sweep, TLS JA4S fingerprinting, and service/version detection all need **no privileges** and never prompt for one. Only the raw-socket probes (`-i`/`--iface` TCP/IP-stack and clock-skew fingerprinting, ICMP discovery) need elevation, and they auto-elevate through your OS's own **`sudo`** (Linux/macOS) or **UAC** (Windows) prompt the moment you pass `-i` — never a BANSHEE-owned password field. Windows also needs **[Npcap](https://npcap.com)** (WinPcap-compatible mode) for those raw-socket probes once elevated.
 
 <details>
 <summary><b>OS-specific notes</b> — Kali/Debian/Ubuntu, Windows, macOS, Docker, <code>pipx</code>/<code>pip</code>, from source</summary>
@@ -282,6 +282,10 @@ banshee [OPTIONS] TARGETS...
 ```
 
 `TARGETS` are IPs, CIDRs, ranges, or hostnames: `192.168.1.0/24`, `10.0.0.5-20`, `host.lan`.
+Ranges take a last-octet shorthand (`10.0.0.5-20`) or two full addresses
+(`10.0.0.5-10.0.0.20`), both endpoints included. Every form expands identically
+on either engine, and a token that would expand past `max_hosts_per_scan` is
+refused rather than truncated.
 
 BANSHEE has **two independent dials.** *Verbosity* controls how much it prints; *intensity* controls how loud it is on the wire. They never affect each other.
 
@@ -312,7 +316,7 @@ works, just hidden until you ask: run `banshee --help-advanced` to see all of it
 | `-m, --mode [stealth\|normal\|aggressive]` | Scan intensity (default **`normal`** — actively probes like `nmap`). `stealth` is slow and rate-limited; `--dry-run` sends zero packets |
 | `-T, --timing 0..5` | Timing template, T0 (paranoid) … T5 (insane), default `3` |
 
-`--rate`, `--timeout`, `--retries`, `--threads`, `--max-detect-risk` also exist
+`--rate`, `--timeout`, `--threads`, `--max-detect-risk` also exist
 (the last is a hard ceiling on noise: `0` = no active probes, `10` = full
 intensity) — `banshee --help-advanced`.
 
@@ -504,7 +508,7 @@ allowlist:
   - 0.0.0.0/0
   - "::/0"
 denylist: []
-max_hosts_per_scan: 1048576
+max_hosts_per_scan: 65536
 max_ports_per_host: 65535
 ```
 
@@ -524,6 +528,20 @@ banshee 203.0.113.5 --scope my-engagement.yaml
 ```
 
 With a restrictive scope, anything not on the list is refused with **exit code 3**, and a target larger than `max_hosts_per_scan` is refused outright rather than silently truncated. Use a denylist to carve out hosts you must never touch even inside an allowed range.
+
+**Keep the record with `--audit-log`.** Pass a path and BANSHEE appends a JSONL
+trail of the run: name resolution, scan start, every scope decision, and the
+final result. A refused scan is logged too — a blocked target is exactly when
+the record matters — and a dry run is recorded as `dry_run`, distinct from a
+real scan. Both engines write the same trail:
+
+```bash
+banshee 203.0.113.5 --scope my-engagement.yaml --audit-log engagement.jsonl
+```
+```json
+{"ts": "…", "event": "scan_start", "mode": "normal", "targets": ["203.0.113.5"], "engine": "go"}
+{"ts": "…", "event": "scope_violation", "out_of_scope": ["203.0.113.5"], "engine": "go"}
+```
 
 ---
 
@@ -619,7 +637,7 @@ alone, so an ordinary web+SSH server is left untouched.
 | `--udp and --adaptive are mutually exclusive` | Pick one: UDP scan **or** the TCP adaptive planner. |
 | UDP scan shows lots of `open\|filtered` | Working as intended — that's an honest "can't tell open from filtered", not a bug. A firewall dropping UDP looks identical to a silent open service; only a reply proves `open`. |
 | `-i`/`--iface` finds nothing on Windows | Install [Npcap](https://npcap.com) in WinPcap-compatible mode. Raw-socket fingerprinting needs a packet driver. |
-| `Operation not permitted` on `-i` / ICMP | Raw sockets need privileges. `-i`/`--iface` auto-re-launches through `sudo`/UAC — if that was declined or failed, it falls back to running unprivileged rather than erroring out (JA4 capture just won't fire). The active TCP/UDP sweep and plain ICMP never need privilege at all. |
+| `Operation not permitted` on `-i` / ICMP | Raw sockets need privileges. `-i`/`--iface` auto-re-launches through `sudo`/UAC — on Windows a declined UAC falls back to an unprivileged run; on Linux/macOS a declined `sudo` ends the run with sudo's exit code, since `execvp` has already replaced the process. The active TCP/UDP sweep and TLS JA4S fingerprinting never need privilege at all. |
 | Garbled banner on an old terminal | Harmless — BANSHEE auto-falls back to an ASCII banner when the console can't render block glyphs. |
 | `--agentic` does nothing | It needs a local [Ollama](https://ollama.com) server with a pulled model. |
 

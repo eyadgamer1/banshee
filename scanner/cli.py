@@ -47,42 +47,81 @@ _NETWORKISH = re.compile(r"^[0-9./:\-]+$")
 _HOSTNAME = re.compile(r"^(?=.*[A-Za-z0-9])[A-Za-z0-9._-]+$")
 
 
-def _target_is_valid(token: str) -> bool:
-    """True if a target token is usable: a valid IP (v4/v6), CIDR, last-octet or
-    full range, or a plausible hostname. A token that looks like an address (only
-    digits and network punctuation) but does not parse — ``999.999.999.999``,
-    ``10.0.0.0/99``, ``10.0.0.5-999`` — and junk like ``@@@`` are rejected here,
-    so a typo fails fast with a clear message instead of silently resolving to
-    nothing. A well-formed but unresolvable hostname still passes; the resolver
-    decides, and the run reports that no host responded."""
+def _range_problem(token: str, start: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None:
+    """Validate a range token whose left side already parsed as `start`.
+
+    Two forms are accepted: the full range (``10.0.0.5-10.0.0.20``,
+    ``2001:db8::5-2001:db8::20``) and the IPv4 last-octet shorthand
+    (``10.0.0.5-20``). The IPv6 equivalent (``2001:db8::5-10``) is *rejected with
+    a message*, not supported: expanding it would have to happen in
+    `core/engine.py::expand_target` and in the Go engine's own expander, neither
+    of which understands it, so accepting it here would only move the silent drop
+    one stage later. The full IPv6 range form does work end-to-end, so the message
+    points at it.
+    """
+    right = token.rsplit("-", 1)[1]
+    if "." in right or ":" in right:  # full range: both sides are addresses
+        try:
+            end: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.ip_address(right)
+        except ValueError:
+            return f"{right!r} is not a valid IP address to end the range"
+        if end.version != start.version:
+            return "range mixes IPv4 and IPv6 addresses"
+    elif start.version == 6:
+        return (
+            "IPv6 shorthand ranges are not supported; write the range out in full, "
+            "e.g. 2001:db8::5-2001:db8::10"
+        )
+    else:  # IPv4 last-octet shorthand
+        try:
+            end = ipaddress.ip_address(f"{str(start).rsplit('.', 1)[0]}.{right}")
+        except ValueError:
+            return f"{right!r} is not a valid last octet (expected 0-255)"
+    if int(end) < int(start):
+        return "range ends before it starts"
+    return None
+
+
+def _target_problem(token: str) -> str | None:
+    """None if a target token is usable, else a short reason it is not.
+
+    Usable: a valid IP (v4/v6), CIDR, IPv4 last-octet range, full v4/v6 range, or
+    a plausible hostname. A token that looks like an address but does not parse —
+    ``999.999.999.999``, ``10.0.0.0/99``, ``10.0.0.5-999`` — and junk like ``@@@``
+    are rejected here, so a typo fails fast with a clear message instead of
+    silently resolving to nothing. A well-formed but unresolvable hostname still
+    passes; the resolver decides, and the run reports that no host responded.
+    """
     token = token.strip()
     if not token:
-        return False
+        return "empty target"
     try:
         ipaddress.ip_address(token)
-        return True
+        return None
     except ValueError:
         pass
     if "/" in token:  # CIDR (v4 or v6)
         try:
             ipaddress.ip_network(token, strict=False)
-            return True
         except ValueError:
-            return False
-    if _NETWORKISH.match(token):  # address-shaped: must be a valid range, else bad
-        if "-" in token:
-            left, right = token.rsplit("-", 1)
-            try:
-                ipaddress.ip_address(left)
-                if "." in right or ":" in right:
-                    ipaddress.ip_address(right)
-                else:
-                    ipaddress.ip_address(f"{left.rsplit('.', 1)[0]}.{right}")
-                return True
-            except ValueError:
-                return False
-        return False
-    return bool(_HOSTNAME.match(token))
+            return "not a valid CIDR block"
+        return None
+    # Ranges are checked before the address-shaped regex, which cannot match an
+    # IPv6 range (hex letters) and would otherwise hand ``2001:db8::5-10`` to the
+    # hostname check, where the colons fail — the old silent "malformed" path.
+    if "-" in token:
+        left = token.rsplit("-", 1)[0]
+        try:
+            start = ipaddress.ip_address(left)
+        except ValueError:
+            pass  # not a range; a hostname may legitimately contain "-"
+        else:
+            return _range_problem(token, start)
+    if _NETWORKISH.match(token):  # address-shaped but parsed as nothing above
+        return "not a valid IP address, CIDR block, or range"
+    if _HOSTNAME.match(token):
+        return None
+    return "not an IP, CIDR, range, or hostname"
 
 
 def parse_ports(spec: str) -> list[int]:
@@ -275,29 +314,40 @@ def _help_advanced_cb(ctx: typer.Context, value: bool) -> None:
 _DEFAULT_SCOPE_FILE = "config/scope.yaml"
 
 
-def _resolve_scope_file(scope_file: str, console: Console, *, quiet: bool) -> str:
+def _resolve_scope_file(scope_file: str | None, warn: Console) -> str:
     """Return a usable scope path.
 
-    If the given file exists, use it. If it does not and the user did not override
-    ``--scope`` (still the default), fall back to the packaged default scope so an
-    installed ``banshee`` works from any directory. An explicit missing path is
-    left untouched, so it fails loudly with the value the user actually typed.
+    ``scope_file`` is ``None`` when ``--scope`` was not passed at all — that, and
+    only that, permits the fallback chain. It cannot be inferred by comparing the
+    value to ``_DEFAULT_SCOPE_FILE``: an operator who explicitly types
+    ``--scope config/scope.yaml`` produces the identical string, and treating that
+    as "unset" silently swapped their missing allowlist for the packaged
+    open scope (``0.0.0.0/0``). ``--scope`` is the one flag whose whole purpose is
+    to fail closed, so an explicitly given path that does not exist raises
+    ``FileNotFoundError`` and the run is refused.
+
+    With ``--scope`` unset: the working-directory default is used when present,
+    otherwise the copy shipped inside the package, so an installed ``banshee``
+    works from any directory. The packaged scope allows every target, so loading
+    it always prints a warning — on ``warn`` (stderr), which ``-q``/``--silent``
+    do not suppress. Nobody scans under a ``0.0.0.0/0`` allowlist with no signal.
     """
-    if Path(scope_file).exists():
+    if scope_file is not None:
+        if not Path(scope_file).exists():
+            raise FileNotFoundError(scope_file)
         return scope_file
-    if scope_file != _DEFAULT_SCOPE_FILE:
-        return scope_file
+    if Path(_DEFAULT_SCOPE_FILE).exists():
+        return _DEFAULT_SCOPE_FILE
     from importlib.resources import files
 
     packaged = files("scanner").joinpath("data", "default_scope.yaml")
     if not packaged.is_file():
-        return scope_file
-    if not quiet:
-        console.print(
-            "[yellow]open scope: every target is allowed (nmap-style). "
-            "You are responsible for authorization on every target. "
-            "Pass --scope to restrict to a lab range.[/yellow]"
-        )
+        raise FileNotFoundError(_DEFAULT_SCOPE_FILE)
+    warn.print(
+        "[yellow]open scope: every target is allowed (nmap-style). "
+        "You are responsible for authorization on every target. "
+        "Pass --scope to restrict to a lab range.[/yellow]"
+    )
     return str(packaged)
 
 
@@ -327,19 +377,32 @@ def _maybe_elevate(iface: str | None, dry_run: bool, console: Console) -> None:
     """Auto re-exec through the OS's own sudo/UAC prompt when `--iface` asks
     for raw-socket capture and this process doesn't already have it.
 
-    Only `--iface` triggers this. ICMP discovery and TLS JA4 fingerprinting
-    already run opportunistically on every scan and degrade gracefully
-    without privilege (see `IcmpPingDiscoverer`/`TlsJa4Fingerprinter` — a
-    `PermissionError` there is caught and logged, not raised) — treating their
-    mere presence in the pipeline as "needs elevation" would prompt for sudo
-    on every ordinary scan, exactly the blanket-privilege default this
-    project rejects. `--iface` is the one flag that is an explicit,
-    unambiguous request for privileged capture.
+    Only `--iface` triggers this. ICMP discovery and the raw-socket TCP/IP
+    and clock-skew probes already run opportunistically on every scan and
+    degrade gracefully without privilege (a `PermissionError` there is caught
+    and logged, not raised) — treating their mere presence in the pipeline as
+    "needs elevation" would prompt for sudo on every ordinary scan, exactly
+    the blanket-privilege default this project rejects. `--iface` is the one
+    flag that is an explicit, unambiguous request for privileged capture.
+    (TLS JA4S needs no privilege at all: it is an ordinary stdlib TLS
+    handshake, not a capture.)
 
     `--dry-run` never elevates (zero packets sent, nothing for a raw socket to
-    do); a process that already has the privilege never re-execs (no loop);
-    a declined/failed elevation falls through to an ordinary unprivileged run
-    rather than aborting the scan outright.
+    do), and a process that already has the privilege never re-execs (no loop).
+
+    What a declined elevation does is platform-specific, and the two halves are
+    genuinely different:
+
+    * Windows — `ShellExecuteW` spawns a *separate* elevated process, so this one
+      survives. A declined or failed UAC prompt (return code <= 32) prints a note
+      and falls through to an ordinary unprivileged run; an accepted one exits 0
+      here and leaves the elevated process to do the scan.
+    * POSIX — `os.execvp` replaces this process image with sudo's. Nothing after
+      it can run, so there is no falling through: if sudo starts and the operator
+      declines (or mistypes the password), sudo exits non-zero and the run ends
+      there. The only fall-through case is `os.execvp` itself failing — sudo
+      missing or not executable — which never replaced the image, so the note
+      prints and the scan continues unprivileged.
     """
     if dry_run or iface is None or _has_raw_socket_privilege():
         return
@@ -384,7 +447,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     iface: Annotated[
         str | None,
         typer.Option("--iface", "-i", rich_help_panel=_TARGETS, hidden=not _SHOW_ADVANCED,
-                     help="capture NIC for raw-socket fingerprinting (e.g. TLS JA4)"),
+                     help="NIC for raw-socket fingerprinting (TCP/IP stack, clock-skew)"),
     ] = None,
     ports: Annotated[
         str | None,
@@ -437,11 +500,11 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         typer.Option("--timeout", min=1, help="probe timeout ms (default from -T)",
                      rich_help_panel=_INTENS, hidden=not _SHOW_ADVANCED),
     ] = None,
-    retries: Annotated[
-        int | None,
-        typer.Option("--retries", min=0, help="probe retries (default from -T)",
-                     rich_help_panel=_INTENS, hidden=not _SHOW_ADVANCED),
-    ] = None,
+    # NOTE: there is deliberately no --retries flag. Nothing retries a probe —
+    # not tcp_sweep.py, not icmp.py, not scan.go/udp.go — and the Go engine has no
+    # -retries flag to forward it to, so the option only ever advertised behavior
+    # the code does not implement. `StealthBudget.retries` still carries the
+    # per-template value for whoever implements a retry loop; re-add the flag then.
     threads: Annotated[
         int | None,
         typer.Option("--threads", min=1, help="max concurrency", rich_help_panel=_INTENS,
@@ -585,9 +648,19 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         ),
     ] = False,
     # --- safety ---
+    # Default is None, not the path itself: `_resolve_scope_file` must be able to
+    # tell "not passed" (fallback allowed) from "explicitly passed" (must exist).
     scope_file: Annotated[
-        str, typer.Option("--scope", help="scope allowlist file", rich_help_panel=_SAFETY)
-    ] = _DEFAULT_SCOPE_FILE,
+        str | None,
+        typer.Option(
+            "--scope",
+            # The default is spelled out in the text because the real default is
+            # None (see above) and rich markup mode eats square brackets.
+            help=f"scope allowlist file (default: {_DEFAULT_SCOPE_FILE})",
+            show_default=False,
+            rich_help_panel=_SAFETY,
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         typer.Option("--dry-run", help="plan only; send zero packets", rich_help_panel=_SAFETY),
@@ -695,15 +768,27 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
             console.print(f"[red]error:[/red] bad --ports value {ports!r}: {exc}")
             raise typer.Exit(code=2) from None
 
-    malformed = [t for t in targets if not _target_is_valid(t)]
-    if malformed:
-        console.print(
-            f"[yellow]warning:[/yellow] ignoring malformed target(s): {', '.join(malformed)}"
-        )
-    targets = [t for t in targets if _target_is_valid(t)]
+    # Each rejected target says *why*, so a form we deliberately do not support
+    # (an IPv6 last-hextet range, say) is not indistinguishable from a typo.
+    usable: list[str] = []
+    for token in targets:
+        problem = _target_problem(token)
+        if problem is None:
+            usable.append(token)
+        else:
+            console.print(f"[yellow]warning:[/yellow] ignoring target {token!r}: {problem}")
+    targets = usable
     if not targets:
         console.print("[red]error:[/red] no valid targets (expected IP, CIDR, range, or hostname)")
         raise typer.Exit(code=2)
+
+    # Resolved before the config is built so `cfg.scope_file` records the file the
+    # ScopeGuard was actually loaded from, not a path that may not exist.
+    try:
+        resolved_scope = _resolve_scope_file(scope_file, Console(no_color=no_color, stderr=True))
+    except FileNotFoundError as exc:
+        console.print(f"[red]error:[/red] scope file not found: {exc.args[0]}")
+        raise typer.Exit(code=2) from None
 
     cfg = ScanConfig(
         targets=targets,
@@ -713,7 +798,6 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         timing=timing,
         rate=rate,
         timeout_ms=timeout,
-        retries=retries,
         threads=threads,
         max_detect_risk=max_detect_risk,
         engine=engine,
@@ -730,7 +814,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         deception=do_deception,
         db=db,
         baseline=baseline,
-        scope_file=scope_file,
+        scope_file=resolved_scope,
         dry_run=dry_run,
         audit_log=audit_log,
         out_txt=out_txt,
@@ -746,7 +830,6 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
 
     try:
         audit = AuditLog(cfg.audit_log)
-        resolved_scope = _resolve_scope_file(cfg.scope_file, console, quiet=quiet or silent)
         guard = ScopeGuard.from_file(resolved_scope, audit=audit)
     except FileNotFoundError:
         console.print(f"[red]error:[/red] scope file not found: {cfg.scope_file}")

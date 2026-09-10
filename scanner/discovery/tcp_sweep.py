@@ -7,7 +7,11 @@ but the port is closed. Timeouts and unreachable errors are treated as no signal
 
 Honors the StealthBudget (max-detect-risk 0 => zero packets, enforced via `can_send`)
 and the ScopeGuard (never touch an out-of-scope IP — defense in depth, since the
-engine already scope-filters). No raw sockets, no admin required.
+engine already scope-filters; and never exceed its `max_ports_per_host` cap). No raw
+sockets, no admin required.
+
+Probes are drained by a fixed-size worker pool rather than one task per (host, port),
+so a `-p-` sweep of a /24 stays flat in memory instead of building millions of tasks.
 """
 
 from __future__ import annotations
@@ -57,6 +61,12 @@ _DEAD = "dead"
 _BANNER_BYTES = 256
 _BANNER_TIMEOUT_S = 2.0
 
+# Ceiling on simultaneously-live probe tasks. The budget's concurrency bounds how
+# many sockets may be open at once; this bounds how many *coroutine objects* exist,
+# which is a separate resource. Materialising one task per (host, port) up front —
+# 254 hosts x 65535 ports is ~16.6M — costs gigabytes before a single connect.
+_MAX_WORKERS = 1024
+
 
 class TcpSweepDiscoverer:
     """A3 — TCP-connect ping sweep. Unprivileged, cross-platform."""
@@ -74,26 +84,47 @@ class TcpSweepDiscoverer:
             return []
 
         in_scope = [ip for ip in targets if ctx.scope.is_in_scope(ip)]
-        sem = ctx.budget.make_semaphore()
+        ports = self._effective_ports(ctx)
+        if not in_scope or not ports:
+            ctx.audit.log("discover_done", discoverer=self.name, up=0)
+            return []
 
-        async def scan(ip: str) -> Host | None:
-            return await self._scan_host(ip, ctx, sem)
+        # (host, port) pairs are produced lazily and drained by a fixed worker pool, so
+        # peak memory is O(workers), not O(hosts x ports). Advancing the shared generator
+        # is a plain `next()` with no await inside it, so it is atomic for the event loop.
+        work = ((ip, port) for ip in in_scope for port in ports)
+        results: dict[str, dict[int, tuple[str, str | None]]] = {ip: {} for ip in in_scope}
 
-        found = await asyncio.gather(*(scan(ip) for ip in in_scope))
-        hosts = [h for h in found if h is not None]
+        async def worker() -> None:
+            for ip, port in work:
+                outcome, banner = await self._probe_port(ip, port, ctx)
+                results[ip][port] = (outcome, banner)
+
+        # Worker count *is* the socket-concurrency bound the semaphore used to provide.
+        workers = min(max(1, ctx.budget.concurrency), _MAX_WORKERS, len(in_scope) * len(ports))
+        await asyncio.gather(*(worker() for _ in range(workers)))
+
+        hosts = [h for h in (self._build_host(ip, results[ip]) for ip in in_scope) if h is not None]
         ctx.audit.log("discover_done", discoverer=self.name, up=len(hosts))
         return hosts
 
-    async def _scan_host(self, ip: str, ctx: ScanContext, sem: asyncio.Semaphore) -> Host | None:
-        async def probe(port: int) -> tuple[int, str, str | None]:
-            async with sem:
-                outcome, banner = await self._probe_port(ip, port, ctx)
-                return port, outcome, banner
+    def _effective_ports(self, ctx: ScanContext) -> tuple[int, ...]:
+        """Apply the scope file's `max_ports_per_host` cap to this run's probe set."""
+        cap = ctx.scope.max_ports_per_host
+        if cap > 0 and len(self.ports) > cap:
+            ctx.audit.log(
+                "port_cap",
+                discoverer=self.name,
+                requested=len(self.ports),
+                cap=cap,
+            )
+            return self.ports[:cap]
+        return self.ports
 
-        results = await asyncio.gather(*(probe(p) for p in self.ports))
-        banners = {port: banner for port, outcome, banner in results if outcome == _OPEN}
-        open_ports = [port for port, outcome, _ in results if outcome == _OPEN]
-        alive = any(outcome in (_OPEN, _REFUSED) for _, outcome, _ in results)
+    def _build_host(self, ip: str, probed: dict[int, tuple[str, str | None]]) -> Host | None:
+        banners = {port: banner for port, (outcome, banner) in probed.items() if outcome == _OPEN}
+        open_ports = list(banners)
+        alive = any(outcome in (_OPEN, _REFUSED) for outcome, _ in probed.values())
         if not alive:
             return None
 

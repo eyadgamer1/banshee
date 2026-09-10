@@ -97,13 +97,25 @@ def _label_universe() -> frozenset[str]:
 
 _LABELS = _label_universe()
 
-# A label must beat a uniform guess across every recognized device type by
-# this factor to be asserted; below it, "unknown" is the honest answer. 3x
-# uniform clears every single-hint case the tables can produce on their own
-# (the weakest, a single weight-1 port hint, still scores ~2x this floor)
-# while catching a genuine tie between two contradicting weak signals, which
-# otherwise silently picks whichever label happens to sort first.
-_CONFIDENCE_FLOOR = 3.0 / len(_LABELS)
+# The floor a top label's softmax probability must clear to be asserted; below
+# it, "unknown" is the honest answer. It is derived from the two cases it has
+# to separate rather than picked as a multiple of the uniform prior — an
+# earlier `3.0 / len(_LABELS)` floor (0.300 for the 10 labels these tables
+# produce) sat *above* the score of a lone weight-1 vote, so every weight-1
+# signal (all of `_OS_HINTS`, plus the weight-1 entries of `_PORT_HINTS`) was
+# silently dead code and such hosts always came back "unknown".
+#
+# With N = len(_LABELS) = 10:
+#   * a lone weight-1 vote scores exp(1) / (exp(1) + N - 1)     = 0.232
+#   * each side of a weight-1 tie scores exp(1) / (2exp(1) + N - 2) = 0.202
+# The floor is their geometric mean (0.217 at N = 10): a single genuine
+# weight-1 hint clears it, while two contradicting weight-1 hints do not and
+# fall back to "unknown" instead of silently picking whichever label sorts
+# first. Both expressions are written out so the floor tracks the tables if
+# a new label is ever added.
+_LONE_WEAK_PROB = math.exp(1) / (math.exp(1) + len(_LABELS) - 1)
+_TIED_WEAK_PROB = math.exp(1) / (2 * math.exp(1) + len(_LABELS) - 2)
+_CONFIDENCE_FLOOR = math.sqrt(_LONE_WEAK_PROB * _TIED_WEAK_PROB)
 
 
 def _scores(host: Host) -> dict[str, int]:

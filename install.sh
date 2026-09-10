@@ -37,7 +37,10 @@ PYTHON=$(command -v python3 || command -v python || true)
 VER=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 info "Found Python $VER"
 
-python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)" \
+# Use the interpreter resolved above, not a hardcoded `python3`: on a host where
+# only `python` exists that call is command-not-found, so the installer would
+# refuse to install while contradicting the version it just printed.
+"$PYTHON" -c "import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)" \
     || error "Python $MIN_PYTHON+ required. Got $VER."
 
 # --- Install method selection ---

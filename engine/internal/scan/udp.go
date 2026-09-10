@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/eyadgamer1/banshee/engine/internal/adaptive"
 	"github.com/eyadgamer1/banshee/engine/internal/model"
 )
 
@@ -48,10 +49,11 @@ var udpPayloads = map[int][]byte{
 }
 
 func (e *Engine) udpCandidatePorts() []int {
-	if len(e.opts.Ports) > 0 {
-		return e.opts.Ports
+	ports := e.opts.Ports
+	if len(ports) == 0 {
+		ports = udpDefaultPorts
 	}
-	return udpDefaultPorts
+	return e.allowedPorts(ports)
 }
 
 // probeUDP sends one budgeted, scope-checked UDP datagram and classifies the
@@ -63,6 +65,12 @@ func (e *Engine) probeUDP(ctx context.Context, ip string, port int) probeResult 
 		source: "A3-udp", confidence: model.Potential,
 	}
 	if !e.guard.InScope(ip) || !e.budget.CanSend() {
+		return pr
+	}
+	// Re-check the per-probe risk ceiling here too, for the same reason scope is
+	// re-checked: a bug upstream that let a too-loud port through the candidate
+	// filter must still not put a datagram on the wire.
+	if !e.budget.AllowProbeRisk(adaptive.PortRisk(port)) {
 		return pr
 	}
 	if err := e.budget.Acquire(ctx); err != nil {

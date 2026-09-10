@@ -1,7 +1,7 @@
 """D3 — Stealth budget. Resolves the *intensity* dial into concrete limits.
 
 Intensity (how loud) is kept strictly separate from verbosity (how chatty).
-Inputs: --mode {passive|stealth|normal|aggressive}, -T0..T5, --rate, --timeout,
+Inputs: --mode {stealth|normal|aggressive}, -T0..T5, --rate, --timeout,
 --retries, --threads, --max-detect-risk.
 
 --max-detect-risk 0 => zero active packets, full stop. The budget is
@@ -46,7 +46,6 @@ class StealthBudget:
     connect_timeout_ms: int
     retries: int
     rate_pps: int | None
-    max_packets: int | None
     detect_risk: int
 
     _sent: int = 0
@@ -78,7 +77,6 @@ class StealthBudget:
             connect_timeout_ms=max(0, connect_timeout),
             retries=max(0, retries),
             rate_pps=cfg.rate,
-            max_packets=None,
             detect_risk=risk,
         )
 
@@ -91,12 +89,14 @@ class StealthBudget:
         return self._sent
 
     def can_send(self) -> bool:
-        """False if active probing is disabled or the packet budget is exhausted."""
-        if not self.allow_active_probes:
-            return False
-        if self.max_packets is not None and self._sent >= self.max_packets:
-            return False
-        return True
+        """False if active probing is disabled (mode gate / --max-detect-risk 0).
+
+        There is deliberately no total-packet cap here. One used to exist, but nothing
+        could ever set it — `from_config` hardwired it to None and no flag or config key
+        fed it — so it read as a safety guarantee while enforcing nothing. Re-add it only
+        together with the CLI flag that populates it.
+        """
+        return self.allow_active_probes
 
     async def throttle(self) -> None:
         """Await the inter-probe delay and per-second rate cap, then count a packet.

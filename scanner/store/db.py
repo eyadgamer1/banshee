@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS services (
     name       TEXT,
     product    TEXT,
     version    TEXT,
+    -- Grades the product/version CLAIM (Service.version_confidence), which is a
+    -- different axis from `confidence` (the open/closed state). Dropping it made
+    -- stored history unable to tell a named-product match from the generic
+    -- "Word/1.2.3" fallback.
+    version_confidence TEXT,
     banner     TEXT,
     confidence TEXT    NOT NULL,
     source     TEXT
@@ -84,7 +89,9 @@ CREATE TABLE IF NOT EXISTS findings (
     description  TEXT,
     evidence     TEXT,
     source       TEXT,
-    is_llm       INTEGER NOT NULL DEFAULT 0
+    is_llm       INTEGER NOT NULL DEFAULT 0,
+    -- C5 SSVC action tier (IMMEDIATE/OUT_OF_CYCLE/SCHEDULED/DEFER).
+    ssvc_priority TEXT
 );
 
 CREATE TABLE IF NOT EXISTS mac_baseline (
@@ -98,6 +105,15 @@ CREATE TABLE IF NOT EXISTS mac_baseline (
 """
 
 
+# Columns added after the first released schema. SQLite has no "ADD COLUMN IF NOT
+# EXISTS", so an existing banshee.db is upgraded additively at open time — the
+# alternative (silently binding fewer values) is exactly the bug this fixes.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("services", "version_confidence", "TEXT"),
+    ("findings", "ssvc_priority", "TEXT"),
+)
+
+
 class ScanStore:
     """Async context manager wrapping an aiosqlite connection."""
 
@@ -109,8 +125,20 @@ class ScanStore:
         self._conn = await aiosqlite.connect(self._path)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(_DDL)
+        await self._migrate()
         await self._conn.commit()
         return self
+
+    async def _migrate(self) -> None:
+        """Add any column a pre-existing DB is missing (additive, never destructive)."""
+        assert self._conn is not None
+        for table, column, decl in _ADDED_COLUMNS:
+            async with self._conn.execute(f"PRAGMA table_info({table})") as cur:
+                rows = await cur.fetchall()
+            if any(row["name"] == column for row in rows):
+                continue
+            log.info("A6 migrating %s: adding column %s", table, column)
+            await self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     async def __aexit__(self, *_: object) -> None:
         if self._conn:
@@ -169,8 +197,8 @@ class ScanStore:
                 await self._conn.execute(
                     """INSERT INTO services
                        (host_id, port, proto, state, name, product, version,
-                        banner, confidence, source)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                        version_confidence, banner, confidence, source)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         host_id,
                         svc.port,
@@ -179,6 +207,7 @@ class ScanStore:
                         svc.name,
                         svc.product,
                         svc.version,
+                        svc.version_confidence.value if svc.version_confidence else None,
                         svc.banner,
                         svc.confidence.value,
                         svc.source,
@@ -189,8 +218,8 @@ class ScanStore:
                 await self._conn.execute(
                     """INSERT INTO findings
                        (host_id, finding_id, title, severity, confidence,
-                        description, evidence, source, is_llm)
-                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                        description, evidence, source, is_llm, ssvc_priority)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (
                         host_id,
                         finding.id,
@@ -201,6 +230,7 @@ class ScanStore:
                         finding.evidence,
                         finding.source,
                         int(finding.is_llm_inferred),
+                        finding.ssvc_priority,
                     ),
                 )
 

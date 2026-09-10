@@ -23,7 +23,13 @@ _DEFAULT_LLM_TIMEOUT = 60
 
 @dataclass(frozen=True)
 class Settings:
-    """Resolved settings. Every field is read by a real call site."""
+    """Resolved settings. Every field is read by a real call site.
+
+    `llm_*` are read by scanner/llm/{react,report}.py. `db_path` is read by
+    `resolve_db_path()` below, which is the function the CLI must use to resolve
+    `--db` — passing the raw `--db` value straight into ScanConfig is what made the
+    documented `[store].db_path` key a silent no-op.
+    """
 
     llm_model: str = _DEFAULT_LLM_MODEL
     llm_base_url: str = _DEFAULT_LLM_URL
@@ -55,3 +61,32 @@ def load_settings(path: str | Path | None = None) -> Settings:
         llm_timeout_seconds=int(llm.get("timeout_seconds", _DEFAULT_LLM_TIMEOUT)),
         db_path=str(store["db_path"]) if store.get("db_path") else None,
     )
+
+
+def resolve_db_path(cli_value: str | None, settings: Settings | None = None) -> str | None:
+    """Resolve the effective SQLite path: --db wins, else `[store].db_path`, else None.
+
+    This is the call site that makes `Settings.db_path` real. Without it the key was
+    documented in settings.toml ("Default for --db") but read by nothing, so a user who
+    configured it and omitted --db silently got no persistence at all.
+
+    The parent directory is created here because the shipped default lives under
+    `output/`: `ScanStore` opens the path directly, and sqlite raising "unable to open
+    database file" would abort a scan over a directory we can make ourselves. If it
+    cannot be created, persistence is disabled with a warning rather than exploding.
+    """
+    if cli_value:
+        return cli_value
+    configured = (settings if settings is not None else load_settings()).db_path
+    if not configured:
+        return None
+    parent = Path(configured).expanduser().parent
+    try:
+        if str(parent):
+            parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning(
+            "Ignoring [store].db_path %s — cannot create %s: %s", configured, parent, exc
+        )
+        return None
+    return configured

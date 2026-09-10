@@ -227,16 +227,61 @@ class ScanEngine:
         return hosts
 
     async def _fingerprint(self, hosts: list[Host]) -> None:
+        """Enrich every up host, isolating failures.
+
+        A fingerprinter that raises something its own try/except did not anticipate
+        (a scapy error on an odd interface, a struct.error from a hostile packet)
+        must cost us that one probe — not the other fingerprinters for that host,
+        not the other hosts, and above all not the whole run's output. So failures
+        are contained per (host, fingerprinter) and recorded in the audit trail.
+        """
         up = [h for h in hosts if h.state == HostState.UP]
         sem = self.budget.make_semaphore()
 
         async def one(host: Host) -> None:
             async with sem:
                 for fp in self.fingerprinters:
-                    await fp.fingerprint(host, self.ctx)
-                    self._emit("fingerprint", ip=host.ip, by=fp.name)
+                    try:
+                        await fp.fingerprint(host, self.ctx)
+                    except Exception as exc:  # noqa: BLE001 — a bad probe must not end the scan
+                        self._note_fingerprint_error(host, fp.name, exc)
+                        continue
+                    # Carry the enriched fields the live dashboard renders: it folds
+                    # whichever of these an event happens to have, so a fingerprinter
+                    # that learned nothing new simply repeats what is already known.
+                    self._emit(
+                        "fingerprint",
+                        ip=host.ip,
+                        by=fp.name,
+                        name=host.best_name,
+                        os=host.os_guess or "",
+                        ports=",".join(str(p) for p in sorted(host.open_ports)),
+                    )
+                self._emit(
+                    "host_done",
+                    ip=host.ip,
+                    services=len(host.services),
+                    findings=len(host.findings),
+                )
 
-        await asyncio.gather(*(one(h) for h in up))
+        # Belt and braces: anything that escapes `one` (a BaseException-derived error,
+        # or a failure raised by the semaphore itself) is collected, not propagated.
+        outcomes = await asyncio.gather(*(one(h) for h in up), return_exceptions=True)
+        for host, outcome in zip(up, outcomes, strict=True):
+            if isinstance(outcome, asyncio.CancelledError):
+                raise outcome  # cancellation is not a fingerprinting failure
+            if isinstance(outcome, BaseException):
+                self._note_fingerprint_error(host, "?", outcome)
+
+    def _note_fingerprint_error(self, host: Host, by: str, exc: BaseException) -> None:
+        self.scope.audit.log(
+            "fingerprint_error",
+            ip=host.ip,
+            by=by,
+            error=type(exc).__name__,
+            reason=str(exc),
+        )
+        self._emit("fingerprint_error", ip=host.ip, by=by, error=type(exc).__name__)
 
     @staticmethod
     def _merge(into: Host, other: Host) -> None:

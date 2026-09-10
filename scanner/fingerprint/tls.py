@@ -1,20 +1,44 @@
-"""B4 — TLS JA4 fingerprinting.
+"""B4 — TLS server fingerprinting (JA4S-style).
 
-Passively captures TLS ClientHello packets on in-scope hosts and computes a
-JA4 fingerprint (simplified version: TLS version + cipher count + extension
-list hash). This is a passive enricher — no probes sent.
+BANSHEE opens its own TLS connection to an in-scope target and fingerprints
+what the *server* chooses in response: negotiated protocol version, cipher
+suite, and ALPN protocol. That is ordinary active scanning of an authorized
+host — the only traffic involved is traffic this scanner elicited.
 
-JA4 format (simplified): tls_version-num_ciphers-num_extensions-cipher_hash-ext_hash
+This replaces an earlier implementation that ran a scapy `sniff()` filter on
+the wire and fingerprinted ClientHellos it happened to observe. That captured
+third parties' TLS sessions to the target — traffic BANSHEE never elicited and
+no allowlist authorized — which this project forbids outright. Nothing here
+captures; the handshake is ours.
 
-Degrades to a no-op if scapy is unavailable or capture permission is absent.
+Fingerprint format (JA4S-inspired, not byte-identical to the JA4S spec):
+
+    t<version><alpn>_<cipher-hash>      e.g. ``t13h2_5f0d24c7a1b9``
+
+  * ``version``     — 13/12/11/10/s3 for the negotiated protocol
+  * ``alpn``        — first and last character of the ALPN the server picked
+                      ("h2", "h1" for http/1.1), "00" when it picked none
+  * ``cipher-hash`` — first 12 hex of sha256 over the negotiated cipher name
+
+The real JA4S also encodes the ServerHello extension count and a hash of the
+extension list. Python's stdlib TLS API does not expose either, and reading
+them would mean hand-rolling a handshake, so those fields are omitted rather
+than faked. The result is still stable per server stack and comparable across
+hosts in a scan, which is what the classifier and the report use it for.
+
+Degrades to a no-op when the host has no TLS port open, the budget forbids
+active probes, or the handshake fails (plaintext port, client-cert required,
+protocol too old for the local OpenSSL, ...).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import logging
-from typing import TYPE_CHECKING, Any
+import ssl
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from scanner.core.interfaces import ScanContext
@@ -22,134 +46,115 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# TLS content type for handshake
-_TLS_HANDSHAKE = 22
-_CLIENT_HELLO = 1
+# Implicit-TLS ports, in probe preference order. STARTTLS ports (25/110/143/587)
+# are deliberately absent: they need a protocol-specific upgrade command, and a
+# bare TLS handshake there just fails.
+_TLS_PORTS: tuple[int, ...] = (443, 8443, 993, 995, 465, 636, 989, 990, 5061, 9443, 8883)
+
+# Offered so the server's *choice* carries information. Order is our preference;
+# the server picks.
+_ALPN_OFFER = ["h2", "http/1.1"]
+
+_VERSION_CODES = {
+    "TLSv1.3": "13",
+    "TLSv1.2": "12",
+    "TLSv1.1": "11",
+    "TLSv1": "10",
+    "SSLv3": "s3",
+}
 
 
-def _ja4(tls_ver: int, ciphers: list[int], extensions: list[int]) -> str:
-    """Compute a simplified JA4-style fingerprint string."""
-    version_map = {0x0301: "10", 0x0302: "11", 0x0303: "12", 0x0304: "13"}
-    ver_str = version_map.get(tls_ver, f"{tls_ver:04x}")
-    cipher_str = ",".join(f"{c:04x}" for c in sorted(ciphers))
-    ext_str = ",".join(f"{e:04x}" for e in sorted(extensions))
-    c_hash = hashlib.sha256(cipher_str.encode()).hexdigest()[:12]
-    e_hash = hashlib.sha256(ext_str.encode()).hexdigest()[:12]
-    return f"t{ver_str}_{len(ciphers):02d}_{len(extensions):02d}_{c_hash}_{e_hash}"
+def _alpn_code(alpn: str | None) -> str:
+    """Two-character ALPN code, JA4-style: first + last char, "00" if none."""
+    if not alpn:
+        return "00"
+    return f"{alpn[0]}{alpn[-1]}"
 
 
-def _parse_client_hello(data: bytes) -> tuple[int, list[int], list[int]] | None:
-    """Parse a raw TLS ClientHello record; return (version, ciphers, extensions)."""
-    if len(data) < 6:
+def _ja4s(version: str | None, cipher: str | None, alpn: str | None) -> str | None:
+    """Build the fingerprint from what the server negotiated."""
+    if not version or not cipher:
         return None
-    if data[0] != _TLS_HANDSHAKE:
-        return None
-    if data[5] != _CLIENT_HELLO:
-        return None
+    ver = _VERSION_CODES.get(version, "00")
+    cipher_hash = hashlib.sha256(cipher.encode()).hexdigest()[:12]
+    return f"t{ver}{_alpn_code(alpn)}_{cipher_hash}"
+
+
+def _client_context() -> ssl.SSLContext:
+    """A deliberately permissive client context — we fingerprint, never trust.
+
+    Certificates are not validated and hostnames are not checked: targets are
+    addressed by IP, self-signed certs are the norm on appliances, and a failed
+    validation would cost us the fingerprint we came for. Nothing from this
+    connection is used as a trust decision — only the parameters the server
+    selected are read, and then the socket is closed.
+    """
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with contextlib.suppress(ValueError, ssl.SSLError):
+        # Let old appliances answer too; a strict local OpenSSL may refuse.
+        ctx.minimum_version = ssl.TLSVersion.TLSv1
+    with contextlib.suppress(NotImplementedError, ssl.SSLError):
+        ctx.set_alpn_protocols(_ALPN_OFFER)
+    return ctx
+
+
+async def _handshake(ip: str, port: int) -> str | None:
+    """Complete one TLS handshake with the target; return its JA4S string."""
+    reader, writer = await asyncio.open_connection(ip, port, ssl=_client_context())
+    del reader
     try:
-        offset = 9  # skip record header (5) + handshake header (4)
-        if offset + 2 > len(data):
+        sslobj = writer.get_extra_info("ssl_object")
+        if sslobj is None:
             return None
-        client_version = int.from_bytes(data[offset : offset + 2], "big")
-        offset += 2 + 32  # skip version + random
-        # session id
-        if offset >= len(data):
-            return None
-        sid_len = data[offset]
-        offset += 1 + sid_len
-        # cipher suites
-        if offset + 2 > len(data):
-            return None
-        cs_len = int.from_bytes(data[offset : offset + 2], "big")
-        offset += 2
-        ciphers = []
-        for _ in range(cs_len // 2):
-            if offset + 2 > len(data):
-                break
-            ciphers.append(int.from_bytes(data[offset : offset + 2], "big"))
-            offset += 2
-        # compression
-        if offset >= len(data):
-            return None
-        comp_len = data[offset]
-        offset += 1 + comp_len
-        # extensions
-        extensions: list[int] = []
-        if offset + 2 <= len(data):
-            ext_total = int.from_bytes(data[offset : offset + 2], "big")
-            offset += 2
-            end = offset + ext_total
-            while offset + 4 <= end and offset + 4 <= len(data):
-                ext_type = int.from_bytes(data[offset : offset + 2], "big")
-                ext_len = int.from_bytes(data[offset + 2 : offset + 4], "big")
-                extensions.append(ext_type)
-                offset += 4 + ext_len
-        return client_version, ciphers, extensions
-    except Exception:
-        return None
+        cipher = sslobj.cipher()
+        return _ja4s(sslobj.version(), cipher[0] if cipher else None,
+                     sslobj.selected_alpn_protocol())
+    finally:
+        writer.close()
+        # A server that drops the connection rather than answering our
+        # close_notify is normal here and must not mask the fingerprint.
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
 
 
 class TlsJa4Fingerprinter:
-    """B4 — captures ClientHello packets and attaches JA4 fingerprint to host."""
+    """B4 — negotiates TLS with the target and records a JA4S-style fingerprint."""
 
-    name = "tls-ja4-fingerprinter"
+    name = "tls-ja4s-fingerprinter"
     feature_id = "B4"
 
-    def __init__(self, iface: str | None = None, timeout: float = 5.0) -> None:
-        self._iface = iface
+    def __init__(self, timeout: float = 5.0) -> None:
         self._timeout = timeout
 
     async def fingerprint(self, host: Host, ctx: ScanContext) -> Host:
-        """Listen for TLS from this host for a short window."""
         if not ctx.budget.can_send():
             return host
-        # Only attempt if host has port 443 or other TLS ports open
-        tls_ports = {443, 8443, 8080, 636, 993, 995, 465, 587}
-        has_tls = any(p in tls_ports for p in host.open_ports)
-        if not has_tls:
+        port = self._pick_port(host)
+        if port is None:
             return host
 
-        loop = asyncio.get_running_loop()
+        # One TCP connection + handshake; paced and counted like every other
+        # active probe.
+        await ctx.budget.throttle()
+        timeout = ctx.budget.timeout_s or self._timeout
         try:
-            ja4 = await asyncio.wait_for(
-                loop.run_in_executor(None, self._sniff_sync, host.ip),
-                timeout=self._timeout + 2,
-            )
+            ja4s = await asyncio.wait_for(_handshake(host.ip, port), timeout=timeout)
         except Exception as exc:  # TimeoutError is an Exception subclass — covers both
-            log.debug("B4 TLS sniff for %s failed: %s", host.ip, exc)
+            log.debug("B4 TLS handshake with %s:%d failed: %s", host.ip, port, exc)
             return host
 
-        if ja4:
-            if not host.names.get("ja4"):
-                host.names["ja4"] = ja4
+        if ja4s and not host.names.get("ja4s"):
+            host.names["ja4s"] = ja4s
+            log.debug("B4 %s:%d ja4s=%s", host.ip, port, ja4s)
         return host
 
-    def _sniff_sync(self, ip: str) -> str | None:
-        try:
-            from scapy.layers.inet import IP, TCP
-            from scapy.sendrecv import sniff
-        except Exception:
-            return None
-
-        found: list[str] = []
-
-        def _handle(pkt: Any) -> None:
-            try:
-                if not pkt.haslayer(TCP) or not pkt.haslayer(IP):
-                    return
-                if str(pkt[IP].src) != ip:
-                    return
-                raw = bytes(pkt[TCP].payload)
-                parsed = _parse_client_hello(raw)
-                if parsed:
-                    version, ciphers, exts = parsed
-                    found.append(_ja4(version, ciphers, exts))
-            except Exception:
-                pass
-
-        bpf = f"tcp and host {ip} and (port 443 or port 8443 or port 993)"
-        try:
-            sniff(filter=bpf, prn=_handle, timeout=self._timeout, iface=self._iface, store=False)
-        except Exception as exc:
-            log.debug("B4 sniff error: %s", exc)
-        return found[0] if found else None
+    @staticmethod
+    def _pick_port(host: Host) -> int | None:
+        """First open port that speaks implicit TLS, or None."""
+        open_ports = set(host.open_ports)
+        for port in _TLS_PORTS:
+            if port in open_ports:
+                return port
+        return None

@@ -15,8 +15,10 @@ WORKDIR /app
 # Install uv for fast dependency resolution
 RUN pip install --no-cache-dir uv
 
-# Copy project files
-COPY pyproject.toml .
+# Copy project files. README.md and LICENSE are not optional extras: pyproject
+# declares `readme = "README.md"` and `license = { file = "LICENSE" }`, so
+# hatchling aborts the build below without them.
+COPY pyproject.toml README.md LICENSE ./
 COPY scanner/ scanner/
 COPY config/ config/
 
@@ -26,7 +28,7 @@ RUN uv pip install --system -e .
 # Config volume so users can mount their own scope.yaml
 VOLUME ["/app/config", "/app/output"]
 
-# banshee needs NET_RAW for raw sockets (passive sniff + ICMP)
+# banshee needs NET_RAW for raw sockets (active probes + ICMP)
 # Run with: docker run --cap-add NET_RAW --cap-add NET_ADMIN ...
 ENTRYPOINT ["banshee"]
 CMD ["--help"]

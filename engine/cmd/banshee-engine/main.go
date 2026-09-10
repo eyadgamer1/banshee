@@ -51,7 +51,7 @@ func run() int {
 		rate       = fs.Int("rate", 0, "max packets/sec (0 = template default)")
 		threads    = fs.Int("threads", 0, "concurrency override (0 = derive from mode+timing)")
 		timeoutMS  = fs.Int("timeout", -1, "connect timeout ms (-1 = template default)")
-		maxRisk    = fs.Int("max-detect-risk", -1, "0..10; 0 forces passive (-1 = mode default)")
+		maxRisk    = fs.Int("max-detect-risk", -1, "0..10 ceiling on per-probe noise: 0 forces passive, and a\n\tlower value refuses louder probes (443 costs 1, 445 costs 8,\n\tICS ports 9). -1 = mode default, no per-probe ceiling")
 		adaptiveOn = fs.Bool("adaptive", false, "select probes by information gain per unit risk")
 		udpOn      = fs.Bool("udp", false, "also sweep ports over UDP (open|filtered when silent)")
 		serviceOn  = fs.Bool("sV", false, "probe silent open ports for a version banner (sends a probe)")
@@ -97,6 +97,14 @@ func run() int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return exitBadUsage
+	}
+
+	// The engine enforces max_ports_per_host itself; say so out loud here rather
+	// than let a scope-file limit shorten the scan without the operator noticing.
+	if n := len(ports); n > 0 && guard.MaxPortsPerHost > 0 && n > guard.MaxPortsPerHost {
+		fmt.Fprintf(os.Stderr,
+			"warning: %d ports requested but %s caps max_ports_per_host at %d; probing the first %d\n",
+			n, *scopeFile, guard.MaxPortsPerHost, guard.MaxPortsPerHost)
 	}
 
 	b := budget.New(budget.Options{

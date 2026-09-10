@@ -73,16 +73,27 @@ class TcpIpFingerprinter:
             return host  # nothing to probe
 
         loop = asyncio.get_running_loop()
+        port = host.open_ports[0]
+        # The budget is the single source of truth for pacing *and* for the
+        # packet count in the audit trail, so throttle immediately before each
+        # raw packet — the SYN here, the teardown RST below. Sending them from
+        # the executor without this made them fire at scapy's own speed and
+        # left them out of `StealthBudget.packets_sent` entirely.
+        await ctx.budget.throttle()
         try:
-            result = await loop.run_in_executor(
-                None, self._probe_sync, host.ip, host.open_ports[0]
-            )
+            result = await loop.run_in_executor(None, self._probe_sync, host.ip, port)
         except Exception as exc:
             log.debug("B3 probe %s failed: %s", host.ip, exc)
             return host
 
         if result:
-            ttl, window = result
+            ttl, window, ack = result
+            if ctx.budget.can_send():
+                await ctx.budget.throttle()
+                try:
+                    await loop.run_in_executor(None, _rst_sync, host.ip, port, ack)
+                except Exception as exc:  # teardown is best-effort
+                    log.debug("B3 RST teardown %s:%d failed: %s", host.ip, port, exc)
             tb = _ttl_bucket(ttl)
             wb = _win_bucket(window)
             entry = _OS_TABLE.get((tb, wb))
@@ -92,8 +103,8 @@ class TcpIpFingerprinter:
                     host.device_type = entry[1]
         return host
 
-    def _probe_sync(self, ip: str, port: int) -> tuple[int, int] | None:
-        """Send SYN, wait for SYN-ACK, return (ttl, window). Needs raw sockets."""
+    def _probe_sync(self, ip: str, port: int) -> tuple[int, int, int] | None:
+        """Send SYN, wait for SYN-ACK, return (ttl, window, ack). Needs raw sockets."""
         try:
             from scapy.layers.inet import IP, TCP
             from scapy.sendrecv import sr1
@@ -110,10 +121,20 @@ class TcpIpFingerprinter:
             if resp and resp.haslayer(TCP) and int(resp[TCP].flags) & 0x12 == 0x12:
                 ttl = resp[IP].ttl if resp.haslayer(IP) else 64
                 window = resp[TCP].window
-                # Send RST to clean up
-                rst = IP(dst=ip) / TCP(dport=port, flags="R", seq=resp[TCP].ack)
-                sr1(rst, timeout=1, verbose=0)
-                return int(ttl), int(window)
+                return int(ttl), int(window), int(resp[TCP].ack)
         except Exception as exc:
             log.debug("B3 raw socket error for %s:%d — %s", ip, port, exc)
         return None
+
+
+def _rst_sync(ip: str, port: int, ack: int) -> None:
+    """Tear down the half-open connection left by the SYN probe."""
+    try:
+        from scapy.layers.inet import IP, TCP
+        from scapy.sendrecv import send
+    except Exception:
+        return
+    try:
+        send(IP(dst=ip) / TCP(dport=port, flags="R", seq=ack), verbose=0)
+    except Exception as exc:
+        log.debug("B3 RST send error for %s:%d — %s", ip, port, exc)

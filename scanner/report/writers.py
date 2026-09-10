@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -133,16 +134,54 @@ class TxtWriter:
         return block
 
 
+# Characters that XML 1.0 forbids outright — no escape exists for them, and
+# ElementTree writes them through without complaint, so a hostile NBSTAT/mDNS
+# name holding a 0x01 byte silently produces a file no XML parser will accept.
+# Legal: tab, LF, CR, U+0020-U+D7FF, U+E000-U+FFFD, U+10000-U+10FFFF.
+_XML_ILLEGAL = re.compile(
+    "[^\t\n\r -퟿-�\U00010000-\U0010ffff]"
+)
+
+
+def _xml_safe(value: object) -> str:
+    """Render `value` as text that is legal in an XML 1.0 document.
+
+    Illegal characters are rewritten as a visible escape (a 0x01 byte becomes
+    the four literal characters backslash-x-0-1) rather than dropped: the analyst
+    still sees that a host advertised a control byte — itself a signal — and the
+    file still parses.
+    """
+    text = str(value)
+    if _XML_ILLEGAL.search(text) is None:
+        return text
+
+    def _repr(match: re.Match[str]) -> str:
+        code = ord(match.group())
+        return f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}"
+
+    return _XML_ILLEGAL.sub(_repr, text)
+
+
 class XmlWriter:
-    """Nmap-flavoured XML, generated with the stdlib (no external parser)."""
+    """Nmap-flavoured XML, generated with the stdlib (no external parser).
+
+    Every value written here goes through `_xml_safe` first: attributes and text
+    are host-controlled (names, vendors, banner-derived service names, finding
+    titles), and ElementTree escapes `&<>` but not the control bytes XML 1.0
+    bans — those would produce an unparseable `--xml` file with no error raised.
+    """
 
     format_name = "xml"
 
     def write(self, result: ScanResult, path: Path) -> None:
-        root = ET.Element("scan", banner=result.banner, mode=result.config.mode.value)
+        root = ET.Element(
+            "scan",
+            banner=_xml_safe(result.banner),
+            mode=_xml_safe(result.config.mode.value),
+        )
         stats = ET.SubElement(root, "stats")
         for key, value in result.stats.model_dump().items():
-            stats.set(key, str(value))
+            stats.set(key, _xml_safe(value))
         hosts_el = ET.SubElement(root, "hosts")
         for host in result.hosts:
             self._host_el(hosts_el, host)
@@ -155,16 +194,16 @@ class XmlWriter:
         host_el = ET.SubElement(
             parent,
             "host",
-            ip=host.ip,
-            state=host.state.value,
-            confidence=host.confidence.value,
+            ip=_xml_safe(host.ip),
+            state=_xml_safe(host.state.value),
+            confidence=_xml_safe(host.confidence.value),
         )
         if host.best_name:
-            host_el.set("name", host.best_name)
+            host_el.set("name", _xml_safe(host.best_name))
         if host.mac:
-            host_el.set("mac", host.mac)
+            host_el.set("mac", _xml_safe(host.mac))
         if host.vendor:
-            host_el.set("vendor", host.vendor)
+            host_el.set("vendor", _xml_safe(host.vendor))
         services_el = ET.SubElement(host_el, "services")
         for svc in host.services:
             self._service_el(services_el, svc)
@@ -178,23 +217,23 @@ class XmlWriter:
             parent,
             "service",
             port=str(svc.port),
-            proto=svc.proto.value,
-            state=svc.state.value,
-            confidence=svc.confidence.value,
+            proto=_xml_safe(svc.proto.value),
+            state=_xml_safe(svc.state.value),
+            confidence=_xml_safe(svc.confidence.value),
         )
         if svc.name:
-            el.set("name", svc.name)
+            el.set("name", _xml_safe(svc.name))
 
     @staticmethod
     def _finding_el(parent: ET.Element, finding: Finding) -> None:
         el = ET.SubElement(
             parent,
             "finding",
-            id=finding.id,
-            severity=finding.severity.value,
-            confidence=finding.confidence.value,
+            id=_xml_safe(finding.id),
+            severity=_xml_safe(finding.severity.value),
+            confidence=_xml_safe(finding.confidence.value),
         )
-        el.text = finding.title
+        el.text = _xml_safe(finding.title)
 
 
 @lru_cache(maxsize=1)

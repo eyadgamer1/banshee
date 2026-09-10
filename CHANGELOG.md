@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Target ranges failed on the default engine.** `10.0.0.5-20` and
+  `10.0.0.5-10.0.0.20` are documented target forms, but the Go engine's expander
+  handled CIDR only, so a `-` token reached the scope layer unexpanded and was
+  reported as a scope violation — blaming the allowlist for a parsing gap. The Go
+  expander now ports the range branch of the Python expander, so both forms
+  expand identically on either engine, with the same arithmetic
+  `max_hosts_per_scan` refusal and the same pass-through for a malformed or
+  reversed range.
+- **`--audit-log` was silently inert on the default engine.** The Go engine keeps
+  no audit trail of its own and the Python wrapper never wrote one, so a real
+  scan, a dry run, *and a refused out-of-scope scan* all left no record while the
+  flag reported no error. `run_go_engine` now writes the same lifecycle the
+  Python engine does — `resolve`/`resolve_fail`, `scan_start`, `scope_violation`,
+  `scope_filtered_out`, `dry_run`, `scan_done` — each tagged with the engine that
+  produced it. A blocked scan is the case where the record matters most.
+
 ## [1.10.0] — 2026-09-08
 
 Active-only pivot completed; accuracy, CLI, and install work; a 5-agent bug sweep.

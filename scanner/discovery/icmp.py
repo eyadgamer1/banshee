@@ -6,13 +6,18 @@ restriction) this discoverer logs the reason and degrades to a clean no-op so th
 TCP sweep can still carry the scan. Honors the budget and scope like every probe.
 
 A single raw socket receives *all* host ICMP replies, so each echo carries a
-distinct sequence number and replies are matched back to their target by (id, seq).
+distinct sequence number. Attribution requires **both** that (id, seq) match a probe
+we actually sent *and* that the reply's source address is the host that probe was
+sent to: (id, seq) alone is guessable by anything sharing the broadcast domain, so
+matching on it would let one rogue device forge "up/CONFIRMED" for every address in
+the sweep. id and seq are drawn from a CSPRNG so they are not guessable either.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
+import ipaddress
+import secrets
 import socket
 import struct
 from typing import TYPE_CHECKING
@@ -60,6 +65,14 @@ def _parse_reply(packet: bytes) -> tuple[int, int] | None:
     return ident, seq
 
 
+def _norm_ip(value: str) -> str:
+    """Canonical form of an address string, so two spellings of one host compare equal."""
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return value
+
+
 class IcmpPingDiscoverer:
     """A3 — ICMP echo sweep. Privileged; no-ops gracefully without a raw socket."""
 
@@ -92,25 +105,40 @@ class IcmpPingDiscoverer:
     ) -> list[Host]:
         sock.setblocking(False)
         loop = asyncio.get_running_loop()
-        ident = os.getpid() & 0xFFFF
+        # Unpredictable id/seq: os.getpid() and a 0,1,2,... index are trivially
+        # guessable by anything on the wire. Source verification below is the
+        # load-bearing check, but there is no reason to hand out free identifiers.
+        rng = secrets.SystemRandom()
+        ident = rng.randrange(1, 0x10000)
+        base = rng.randrange(0x10000)
+        stride = rng.randrange(1, 0x10000) | 1  # odd => walks all 65536 seqs before repeating
         seq_to_ip: dict[int, str] = {}
 
-        for seq, ip in enumerate(targets):
+        for index, ip in enumerate(targets):
             if not ctx.budget.can_send():
                 break
+            seq = (base + index * stride) & 0xFFFF
+            if seq in seq_to_ip:
+                # >65535 targets in one sweep exhausts the sequence space. Skip rather
+                # than let two targets share an identifier and blur attribution.
+                ctx.audit.log("icmp_seq_exhausted", ip=ip)
+                continue
             await ctx.budget.throttle()
-            seq_to_ip[seq] = ip
             try:
                 await loop.sock_sendto(sock, _build_echo(ident, seq), (ip, 0))
             except OSError as exc:
                 ctx.audit.log("icmp_send_fail", ip=ip, reason=str(exc))
+                continue
+            # Only a probe that actually went out is attributable.
+            seq_to_ip[seq] = ip
 
         alive: set[str] = set()
+        unattributable = 0
         deadline = loop.time() + ctx.budget.timeout_s
         while seq_to_ip and loop.time() < deadline:
             remaining = deadline - loop.time()
             try:
-                packet, _ = await asyncio.wait_for(
+                packet, addr = await asyncio.wait_for(
                     loop.sock_recvfrom(sock, 1024), timeout=remaining
                 )
             except (TimeoutError, OSError):
@@ -118,10 +146,20 @@ class IcmpPingDiscoverer:
             parsed = _parse_reply(packet)
             if parsed is None or parsed[0] != ident:
                 continue
-            ip = seq_to_ip.pop(parsed[1], "")
-            if ip:
-                alive.add(ip)
+            expected = seq_to_ip.get(parsed[1])
+            source = str(addr[0]) if addr else ""
+            if expected is None or _norm_ip(expected) != _norm_ip(source):
+                # Either a sequence number we never sent, or the right sequence number
+                # from the wrong host — a spoofed/racing reply, not evidence of life.
+                unattributable += 1
+                continue
+            del seq_to_ip[parsed[1]]
+            alive.add(expected)
 
+        if unattributable:
+            ctx.audit.log(
+                "icmp_reply_unattributable", discoverer=self.name, dropped=unattributable
+            )
         ctx.audit.log("discover_done", discoverer=self.name, up=len(alive))
         return [
             Host(ip=ip, state=HostState.UP, confidence=ConfidenceTier.CONFIRMED) for ip in alive

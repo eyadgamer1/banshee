@@ -166,7 +166,7 @@ class ScanConfig(BaseModel):
     """Resolved run configuration — produced by the CLI, consumed by the engine."""
 
     targets: list[str] = Field(default_factory=list)
-    iface: str | None = None  # capture NIC for raw-socket fingerprinters (e.g. TLS JA4)
+    iface: str | None = None  # NIC for raw-socket fingerprinters (TCP/IP stack, clock-skew)
 
     # intensity dial
     mode: ScanMode = ScanMode.NORMAL

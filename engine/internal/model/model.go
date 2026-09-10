@@ -72,19 +72,24 @@ type Finding struct {
 }
 
 type Host struct {
-	IP         string            `json:"ip"`
-	State      HostState         `json:"state"`
-	Hostname   *string           `json:"hostname"`
-	MAC        *string           `json:"mac"`
-	Vendor     *string           `json:"vendor"`
-	OSGuess    *string           `json:"os_guess"`
-	DeviceType *string           `json:"device_type"`
-	Names      map[string]string `json:"names"`
-	Services   []Service         `json:"services"`
-	Findings   []Finding         `json:"findings"`
-	Confidence ConfidenceTier    `json:"confidence"`
-	FirstSeen  time.Time         `json:"first_seen"`
-	LastSeen   time.Time         `json:"last_seen"`
+	IP         string    `json:"ip"`
+	State      HostState `json:"state"`
+	Hostname   *string   `json:"hostname"`
+	MAC        *string   `json:"mac"`
+	Vendor     *string   `json:"vendor"`
+	OSGuess    *string   `json:"os_guess"`
+	DeviceType *string   `json:"device_type"`
+	// DeviceTypeConfidence is the posterior probability behind DeviceType, in
+	// [0,1]. It is carried with DeviceType and set only when one is asserted —
+	// null is not the same claim as "confidence 0", so a withheld label leaves
+	// both fields unset. Matches the Python Host.device_type_confidence field.
+	DeviceTypeConfidence *float64          `json:"device_type_confidence"`
+	Names                map[string]string `json:"names"`
+	Services             []Service         `json:"services"`
+	Findings             []Finding         `json:"findings"`
+	Confidence           ConfidenceTier    `json:"confidence"`
+	FirstSeen            time.Time         `json:"first_seen"`
+	LastSeen             time.Time         `json:"last_seen"`
 }
 
 type Stats struct {

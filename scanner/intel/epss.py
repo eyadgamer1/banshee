@@ -61,7 +61,14 @@ async def _fetch_epss(cve_ids: list[str]) -> dict[str, float]:
                                 score = float(item.get("epss", 0.0))
                                 _epss_cache[cve] = score
             except Exception as exc:
-                log.debug("EPSS fetch failed: %s", exc)
+                # WARNING, not DEBUG: at the default level a silent failure here
+                # is indistinguishable from "no CVE scored", and only successful
+                # lookups are cached, so the next batch/run retries.
+                log.warning(
+                    "EPSS fetch failed (%s) — scores omitted for %d CVE(s) in this batch",
+                    exc,
+                    len(uncached),
+                )
         for cve in batch:
             if cve in _epss_cache:
                 results[cve] = _epss_cache[cve]
@@ -69,22 +76,43 @@ async def _fetch_epss(cve_ids: list[str]) -> dict[str, float]:
 
 
 async def _fetch_kev() -> set[str]:
-    """Return set of CVE IDs in CISA KEV catalogue."""
+    """Return the set of CVE IDs in the CISA KEV catalogue.
+
+    Only a *successful* fetch is cached. A failure returns an empty set for this
+    call and leaves `_kev_cache` unset, so the next enrichment retries: caching
+    the failure would have made one transient 5xx/timeout report "no KEV matches"
+    for every later CVE in the process, which reads as a clean result rather than
+    a missing signal. The failure is logged at WARNING for the same reason — at
+    the default level the analyst must see that KEV data is absent, not inferred.
+    """
     global _kev_cache
     if _kev_cache is not None:
         return _kev_cache
     try:
         import aiohttp
+    except ImportError:
+        log.warning("KEV lookup skipped: aiohttp not installed — no KEV flags this run")
+        return set()
+    try:
         async with aiohttp.ClientSession() as session:
             async with session.get(_KEV_URL, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    _kev_cache = {v["cveID"] for v in data.get("vulnerabilities", [])}
-                    return _kev_cache
+                if resp.status != 200:
+                    log.warning(
+                        "KEV fetch failed: HTTP %s from cisa.gov — "
+                        "KEV flags omitted from this run (absence is not evidence)",
+                        resp.status,
+                    )
+                    return set()
+                data = await resp.json(content_type=None)
+                _kev_cache = {v["cveID"] for v in data.get("vulnerabilities", [])}
+                return _kev_cache
     except Exception as exc:
-        log.debug("KEV fetch failed: %s", exc)
-    _kev_cache = set()
-    return _kev_cache
+        log.warning(
+            "KEV fetch failed (%s) — KEV flags omitted from this run "
+            "(absence is not evidence); will retry on the next enrichment",
+            exc,
+        )
+        return set()
 
 
 def _cves_in(*texts: str) -> list[str]:
