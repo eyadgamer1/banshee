@@ -43,7 +43,25 @@ func Expand(targets []string, maxHosts int) ([]string, error) {
 			out = append(out, ip)
 		}
 	}
-	return out, nil
+	return dedupe(out), nil
+}
+
+// dedupe drops repeated addresses while preserving first-seen order, matching
+// what the Python engine does after resolution. Without it, `banshee 10.0.0.1
+// 10.0.0.1` counted two targets on the Go path and one on the Python path, and
+// the duplicate was probed twice — so the two engines disagreed on the host
+// count for identical input, and the host cap counted the same address twice.
+func dedupe(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, tok := range in {
+		if _, dup := seen[tok]; dup {
+			continue
+		}
+		seen[tok] = struct{}{}
+		out = append(out, tok)
+	}
+	return out
 }
 
 // expandRange expands a last-octet range (1.2.3.10-20) or a full range

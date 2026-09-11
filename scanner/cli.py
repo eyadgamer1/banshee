@@ -16,6 +16,8 @@ import ipaddress
 import logging
 import os
 import re
+import socket
+import sqlite3
 import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -31,7 +33,7 @@ from scanner.core.engine import ScanEngine, TargetTooLargeError
 from scanner.core.models import ScanConfig, ScanMode, ScanResult
 from scanner.core.scope import AuditLog, ScopeGuard, ScopeViolationError
 from scanner.correlate import build_attack_graph, build_segment_map, score_deception
-from scanner.engine_go import resolve_engine, run_go_engine
+from scanner.engine_go import EngineUsageError, resolve_engine, run_go_engine
 from scanner.engine_install import EngineInstallError, install_engine
 from scanner.intel import enrich_result, prioritize_result
 from scanner.llm import generate_report, run_react_loop
@@ -144,7 +146,15 @@ def parse_ports(spec: str) -> list[int]:
             continue
         if "-" in chunk:
             lo_s, _, hi_s = chunk.partition("-")
-            lo, hi = int(lo_s), int(hi_s)
+            # Name the bad token instead of letting int() speak: the raw
+            # "invalid literal for int() with base 10: ''" told the operator
+            # nothing about which part of their port spec was wrong.
+            try:
+                lo, hi = int(lo_s), int(hi_s)
+            except ValueError:
+                raise ValueError(
+                    f"{chunk!r} is not a valid port range (expected e.g. 1-1024)"
+                ) from None
             if lo > hi:
                 raise ValueError(f"reversed port range: {chunk}")
             # Bounds-check before materializing the range: a huge hi (e.g. a
@@ -155,7 +165,10 @@ def parse_ports(spec: str) -> list[int]:
                 raise ValueError(f"port out of range: {chunk}")
             ports.extend(range(lo, hi + 1))
         else:
-            ports.append(int(chunk))
+            try:
+                ports.append(int(chunk))
+            except ValueError:
+                raise ValueError(f"{chunk!r} is not a port number") from None
     if not ports:
         raise ValueError("no ports given")
     for p in ports:
@@ -213,7 +226,7 @@ async def _run_pipeline(
 
     # E1 — YAML plugin rules
     if cfg.plugins:
-        n_plugin = run_plugins(result)
+        n_plugin = run_plugins(result, Path(cfg.plugin_dir) if cfg.plugin_dir else None)
         if not silent:
             console.print(f"[dim]E1 plugins: {n_plugin} findings added[/dim]")
 
@@ -247,7 +260,19 @@ async def _run_pipeline(
     # A6/E2 — persistence and rogue detection. The baseline must be read before
     # this run is written, or every MAC in the run would match itself.
     async with AsyncExitStack() as stack:
-        store = await stack.enter_async_context(ScanStore(cfg.db)) if cfg.db else None
+        # Persistence is optional and runs after the scan, so a bad --db path must
+        # not destroy a completed scan with a traceback: an unwritable directory, a
+        # directory passed as the path, or a file that is not a database all used to
+        # surface raw sqlite3 errors here. Warn, drop persistence, and still report.
+        store = None
+        if cfg.db:
+            try:
+                store = await stack.enter_async_context(ScanStore(cfg.db))
+            except (sqlite3.Error, OSError) as exc:
+                console.print(
+                    f"[yellow]warning:[/yellow] could not open database {cfg.db} "
+                    f"({exc}); continuing without persistence"
+                )
         if store is not None and not cfg.baseline:
             known_macs = await store.get_known_macs()
             rogues = RogueDetector().check(result, known_macs)
@@ -258,9 +283,16 @@ async def _run_pipeline(
         result.stats.findings = sum(len(h.findings) for h in result.hosts)
 
         if store is not None:
-            run_id = await store.save_result(result)
-            if not silent:
-                console.print(f"[green]A6 stored[/green] run #{run_id} -> {cfg.db}")
+            try:
+                run_id = await store.save_result(result)
+            except (sqlite3.Error, OSError) as exc:
+                console.print(
+                    f"[yellow]warning:[/yellow] could not write to {cfg.db} "
+                    f"({exc}); scan results were not persisted"
+                )
+            else:
+                if not silent:
+                    console.print(f"[green]A6 stored[/green] run #{run_id} -> {cfg.db}")
 
     return result
 
@@ -373,6 +405,26 @@ def _has_raw_socket_privilege() -> bool:
     return os.geteuid() == 0  # type: ignore[attr-defined,no-any-return]
 
 
+def _iface_problem(iface: str) -> str | None:
+    """None if `iface` names a usable interface, else a short reason it does not.
+
+    Previously any string was accepted, so `--iface eth99nope` and `--iface ""`
+    both ran a normal scan while silently ignoring the flag — the operator
+    believed they were capturing on an interface that does not exist. Enumeration
+    is best-effort: where the platform cannot list interfaces, only the clearly
+    broken empty value is rejected rather than guessing a name is invalid.
+    """
+    if not iface.strip():
+        return "interface name is empty"
+    try:
+        names = {name for _, name in socket.if_nameindex()}
+    except (AttributeError, OSError):
+        return None  # cannot enumerate here; let the capture layer report it
+    if not names or iface in names:
+        return None
+    return f"no such interface; available: {', '.join(sorted(names))}"
+
+
 def _maybe_elevate(iface: str | None, dry_run: bool, console: Console) -> None:
     """Auto re-exec through the OS's own sudo/UAC prompt when `--iface` asks
     for raw-socket capture and this process doesn't already have it.
@@ -424,6 +476,13 @@ def _maybe_elevate(iface: str | None, dry_run: bool, console: Console) -> None:
                 "continuing without raw-socket privilege."
             )
             return
+        # Say where the scan went. ShellExecuteW starts a *separate* elevated
+        # process, so this one exits immediately with no results of its own —
+        # without this line it looks like the command silently did nothing.
+        console.print(
+            "[green]note:[/green] scan is running in a separate elevated window; "
+            "this process is done."
+        )
         raise typer.Exit(code=0)
     try:
         os.execvp("sudo", ["sudo", sys.executable, "-m", "scanner.cli", *argv])
@@ -492,12 +551,14 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     ] = 3,
     rate: Annotated[
         int | None,
-        typer.Option("--rate", min=0, help="max packets/sec (0 = template default)",
+        typer.Option("--rate", min=0, max=1_000_000,
+                     help="max packets/sec (0 = template default)",
                      rich_help_panel=_INTENS, hidden=not _SHOW_ADVANCED),
     ] = None,
     timeout: Annotated[
         int | None,
-        typer.Option("--timeout", min=1, help="probe timeout ms (default from -T)",
+        typer.Option("--timeout", min=1, max=600_000,
+                     help="probe timeout ms (default from -T)",
                      rich_help_panel=_INTENS, hidden=not _SHOW_ADVANCED),
     ] = None,
     # NOTE: there is deliberately no --retries flag. Nothing retries a probe —
@@ -507,7 +568,8 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     # per-template value for whoever implements a retry loop; re-add the flag then.
     threads: Annotated[
         int | None,
-        typer.Option("--threads", min=1, help="max concurrency", rich_help_panel=_INTENS,
+        typer.Option("--threads", min=1, max=10_000,
+                     help="max concurrency", rich_help_panel=_INTENS,
                      hidden=not _SHOW_ADVANCED),
     ] = None,
     max_detect_risk: Annotated[
@@ -623,6 +685,11 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         typer.Option("--plugins", help="apply YAML plugin rules from config/plugins/",
                      rich_help_panel=_TOGGLES, hidden=not _SHOW_ADVANCED),
     ] = False,
+    plugin_dir: Annotated[
+        str | None,
+        typer.Option("--plugin-dir", rich_help_panel=_TOGGLES, hidden=not _SHOW_ADVANCED,
+                     help="directory of YAML plugin rules (default: config/plugins/)"),
+    ] = None,
     do_deception: Annotated[
         bool,
         typer.Option("--deception", help="flag possible honeypot/decoy hosts (local, 0 packets)",
@@ -693,18 +760,35 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     ] = False,
 ) -> None:
     """Discover, fingerprint and report on in-scope network assets."""
-    # Verbosity dial → log level. --debug wins; --silent silences the library logs.
-    if debug:
-        log_level = logging.DEBUG
-    elif silent:
-        log_level = logging.CRITICAL
-    elif verbose >= 2:
-        log_level = logging.INFO
-    else:
-        log_level = logging.WARNING
-    logging.basicConfig(level=log_level, format="%(levelname)s %(name)s: %(message)s")
+    # Verbosity dial → log levels. Three flags, three distinct steps:
+    #   -v    BANSHEE's own INFO (scan stages, segment map, migrations)
+    #   -vv   BANSHEE's own DEBUG (engine argv, per-probe detail)
+    #   -vvv  DEBUG from everything, third-party libraries included (asyncio, …)
+    # Previously -v did nothing outside --adaptive and -vv/-vvv were identical,
+    # so the advertised dial had two steps and DEBUG needed the separate --debug.
+    # --silent wins over all of them, including --debug: its contract is "no
+    # terminal output", and letting --debug punch through left both half-applied.
+    root_level = logging.WARNING
+    scanner_level = logging.WARNING
+    if silent:
+        root_level = scanner_level = logging.CRITICAL
+    elif verbose >= 3:
+        root_level = scanner_level = logging.DEBUG
+    elif debug or verbose == 2:
+        scanner_level = logging.DEBUG
+    elif verbose == 1:
+        scanner_level = logging.INFO
+    logging.basicConfig(level=root_level, format="%(levelname)s %(name)s: %(message)s")
+    # The package logger is set separately so BANSHEE can be chatty without
+    # dragging every third-party library's DEBUG output in with it.
+    logging.getLogger("scanner").setLevel(scanner_level)
 
     console = Console(no_color=no_color, stderr=False)
+    if not silent:
+        _warn_repeated_flags(console)
+    if iface is not None and (problem := _iface_problem(iface)) is not None:
+        console.print(f"[red]error:[/red] --iface {iface!r}: {problem}")
+        raise typer.Exit(code=2)
     _maybe_elevate(iface, dry_run, console)
     print_banner(console, quiet=quiet, silent=silent)
 
@@ -761,7 +845,10 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         out_sarif = out_sarif or f"{out_all}.sarif"
 
     parsed_ports: list[int] | None = None
-    if ports:
+    # `is not None`, not truthiness: `-p ""` is an operator who asked for ports and
+    # got the spec wrong, and treating it as "no --ports given" silently scanned the
+    # default set instead of refusing.
+    if ports is not None:
         try:
             parsed_ports = parse_ports(ports)
         except ValueError as exc:
@@ -810,6 +897,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         enrich=do_enrich,
         ssvc=do_ssvc,
         plugins=do_plugins,
+        plugin_dir=plugin_dir,
         agentic=do_agentic,
         deception=do_deception,
         db=db,
@@ -859,6 +947,9 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
     except ScopeViolationError as exc:
         console.print(f"[red]scope violation:[/red] {exc}")
         raise typer.Exit(code=3) from exc
+    except EngineUsageError as exc:  # Go engine refused the arguments (its exit 2)
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
     except RuntimeError as exc:  # Go engine not built / failed to run
         console.print(f"[red]engine error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -884,7 +975,22 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
         "sarif": cfg.out_sarif,
     }
     for fmt, path in targets_map.items():
-        if path and fmt in writers:
+        if path is None:
+            continue
+        # An empty path is a malformed request, not "no output wanted": it used to
+        # be skipped in silence, so the operator got neither a file nor a warning.
+        if not path.strip():
+            console.print(f"[red]error:[/red] --{fmt} needs a file path, got an empty value")
+            raise typer.Exit(code=2)
+        if _reserved_device_name(path):
+            # Windows resolves these to character devices, so the write "succeeds"
+            # and no file exists — we reported success for output that vanished.
+            console.print(
+                f"[red]error:[/red] --{fmt} path {path!r} is a reserved device name "
+                "on Windows; choose a real filename"
+            )
+            raise typer.Exit(code=2)
+        if fmt in writers:
             try:
                 writers[fmt].write(result, Path(path))
             except OSError as exc:
@@ -892,7 +998,7 @@ def scan(  # noqa: PLR0913 - a CLI surface is inherently wide
                 raise typer.Exit(code=1) from exc
             if not silent:
                 console.print(f"[green]wrote[/green] {fmt} -> {path}")
-        elif path:
+        else:
             console.print(f"[yellow]skip[/yellow] {fmt}: writer not available yet")
 
 
@@ -990,11 +1096,72 @@ _PRESET_DEFAULTS: dict[str, list[str]] = {
 }
 
 
+def _warn_repeated_flags(console: Console) -> None:
+    """Warn when a value-taking flag was passed more than once.
+
+    Click keeps only the last occurrence, so `--json a.json --json b.json` wrote
+    b.json and discarded a.json with no indication at all — a scripted
+    invocation that accidentally passed a path twice lost output silently. The
+    check reads sys.argv because the parsed values no longer carry the
+    duplication.
+    """
+    watched = {
+        "--json", "--html", "--txt", "--xml", "--csv", "--sarif",
+        "--db", "--baseline", "--audit-log", "--scope", "--plugin-dir",
+        "--ports", "-p", "--mode", "-m", "--timing", "-T",
+    }
+    seen: dict[str, int] = {}
+    for arg in sys.argv[1:]:
+        flag = arg.split("=", 1)[0]
+        if flag in watched:
+            seen[flag] = seen.get(flag, 0) + 1
+    for flag, count in seen.items():
+        if count > 1:
+            console.print(
+                f"[yellow]warning:[/yellow] {flag} given {count} times; "
+                "only the last value is used"
+            )
+
+
+def _reserved_device_name(path: str) -> bool:
+    """True if `path` names a Windows character device rather than a file.
+
+    CON, NUL, PRN, AUX, COM1-9 and LPT1-9 resolve to devices regardless of
+    directory or extension, so writing to them appears to succeed while leaving
+    nothing on disk — `--json con` printed "wrote json -> con" for output that
+    went nowhere. Checked on every platform so a config or CI command that works
+    on Linux is not silently lossy when the same line runs on Windows.
+    """
+    stem = Path(path).name.split(".", 1)[0].strip().upper()
+    if stem in {"CON", "PRN", "AUX", "NUL"}:
+        return True
+    return len(stem) == 4 and stem[:3] in {"COM", "LPT"} and stem[3] in "123456789"
+
+
+def _harden_output_encoding() -> None:
+    """Make un-encodable output degrade to a placeholder instead of crashing.
+
+    A Windows console runs on a legacy code page (cp1252 by default), whose codec
+    raises UnicodeEncodeError on anything outside it. Echoing back a target or a
+    report path containing an emoji therefore killed the run with a traceback
+    mid-render — the operator's own input crashed the tool. Errors are set to
+    "replace" so the character prints as a placeholder and the scan reports
+    normally. Wrapped because stdout is not always a reconfigurable text stream
+    (a pytest capture object, or a closed handle under pythonw).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main() -> None:
     """Console entry point. Routes `banshee diff ...` and `banshee install-engine
     ...` to their own apps, `banshee quick/pro/stealth ...` to the scan command
     with that preset's defaults prepended, and every other invocation straight to
     the scan command, so all verbs share one `banshee`."""
+    _harden_output_encoding()
     argv = sys.argv[1:]
     if argv and argv[0] == "diff":
         diff_app(args=argv[1:])

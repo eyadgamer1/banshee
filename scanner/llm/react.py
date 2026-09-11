@@ -136,7 +136,16 @@ async def run_react_loop(result: ScanResult, model: str | None = None) -> str:
                 payload = {"model": model, "messages": messages, "stream": False}
                 async with session.post(url, json=payload) as resp:
                     if resp.status != 200:
-                        log.warning("Ollama returned %d", resp.status)
+                        # A reply means Ollama is up; a non-200 is usually the
+                        # model not being pulled, so name it rather than implying
+                        # the server is down.
+                        body = (await resp.text())[:200].strip()
+                        log.warning(
+                            "Ollama returned HTTP %d for model %r: %s",
+                            resp.status,
+                            model,
+                            body,
+                        )
                         break
                     data = await resp.json()
                     assistant_text: str = data["message"]["content"]

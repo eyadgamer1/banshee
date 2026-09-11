@@ -14,6 +14,7 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -122,11 +123,22 @@ class ScanStore:
         self._conn: aiosqlite.Connection | None = None
 
     async def __aenter__(self) -> ScanStore:
+        # sqlite3 opens lazily, so a path that is not a database connects fine and
+        # only fails on the first statement below. If that happens the connection
+        # must still be closed: aiosqlite runs it on a non-daemon worker thread, so
+        # an abandoned handle keeps the process alive after the scan finishes —
+        # the caller sees a hang rather than the error it was ready to handle.
         self._conn = await aiosqlite.connect(self._path)
-        self._conn.row_factory = aiosqlite.Row
-        await self._conn.executescript(_DDL)
-        await self._migrate()
-        await self._conn.commit()
+        try:
+            self._conn.row_factory = aiosqlite.Row
+            await self._conn.executescript(_DDL)
+            await self._migrate()
+            await self._conn.commit()
+        except BaseException:
+            conn, self._conn = self._conn, None
+            with contextlib.suppress(Exception):
+                await conn.close()
+            raise
         return self
 
     async def _migrate(self) -> None:

@@ -74,7 +74,7 @@ async def generate_report(result: ScanResult, model: str | None = None) -> str:
         import aiohttp
     except ImportError:
         log.warning("aiohttp not installed — D4 report generation unavailable")
-        return _fallback_report(result)
+        return _fallback_report(result, "aiohttp is not installed")
 
     from scanner.core.settings import load_settings
 
@@ -96,17 +96,33 @@ async def generate_report(result: ScanResult, model: str | None = None) -> str:
                 settings.ollama_chat_url, json=payload, timeout=timeout
             ) as resp:
                 if resp.status != 200:
-                    log.warning("Ollama returned HTTP %d for report generation", resp.status)
-                    return _fallback_report(result)
+                    # Ollama answered, so it is running: a non-200 here is almost
+                    # always the requested model not being pulled. Saying "offline"
+                    # sent operators to `ollama serve` for a problem that needs
+                    # `ollama pull` instead.
+                    body = (await resp.text())[:200].strip()
+                    log.warning(
+                        "Ollama returned HTTP %d for model %r: %s", resp.status, model, body
+                    )
+                    return _fallback_report(
+                        result,
+                        f"Ollama is running but rejected model {model!r} "
+                        f"(HTTP {resp.status}); try `ollama pull {model}`",
+                    )
                 data = await resp.json()
                 return str(data["message"]["content"])
     except Exception as exc:
         log.warning("Ollama unreachable for report generation: %s", exc)
-        return _fallback_report(result)
+        return _fallback_report(result, f"Ollama is unreachable at {settings.ollama_chat_url}")
 
 
-def _fallback_report(result: ScanResult) -> str:
-    """Static Markdown report when Ollama is unavailable."""
+def _fallback_report(result: ScanResult, reason: str | None = None) -> str:
+    """Static Markdown report when the LLM is unavailable.
+
+    `reason` names the actual cause so the note does not misdiagnose it. Every
+    failure used to print "Ollama offline — run `ollama serve`", including the
+    common case of Ollama running fine with the configured model not pulled.
+    """
     all_findings = [f for h in result.hosts for f in h.findings]
     high_plus = [f for f in all_findings if f.severity.value in ("critical", "high")]
 
@@ -140,7 +156,7 @@ def _fallback_report(result: ScanResult) -> str:
         "3. Patch services with known CVEs (see EPSS/KEV flags if --enrich was used).",
         "4. Re-scan after remediation to confirm resolution.",
         "",
-        "> *Note: LLM-generated analysis unavailable (Ollama offline). "
-        "Run `ollama serve` for AI-assisted reporting.*",
+        f"> *Note: LLM-generated analysis unavailable — "
+        f"{reason or 'Ollama is unavailable'}.*",
     ]
     return "\n".join(lines)

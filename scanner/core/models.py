@@ -205,6 +205,10 @@ class ScanConfig(BaseModel):
     enrich: bool = False
     ssvc: bool = False
     plugins: bool = False
+    # Where --plugins reads rules from. None means the default config/plugins/,
+    # which is relative to the working directory, so this exists to let a run
+    # from outside the repo root still find its rules.
+    plugin_dir: str | None = None
     agentic: bool = False
     # C8 deception/honeypot signal analysis — local, zero packets. Emits at most
     # one POTENTIAL finding per host from already-collected data.

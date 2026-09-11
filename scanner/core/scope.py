@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,6 +25,8 @@ IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 DEFAULT_BANNER = "AUTHORIZED TARGETS ONLY"
+
+log = logging.getLogger(__name__)
 
 
 class ScopeViolationError(Exception):
@@ -41,6 +44,7 @@ class AuditLog:
     def __init__(self, path: str | None) -> None:
         self.path = Path(path) if path else None
         self._buffer: list[dict[str, object]] = []
+        self._warned = False
 
     def log(self, event: str, **fields: object) -> None:
         entry: dict[str, object] = {
@@ -50,12 +54,42 @@ class AuditLog:
         }
         self._buffer.append(entry)
         if self.path is not None:
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry) + "\n")
+            try:
+                with self.path.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(entry) + "\n")
+            except OSError as exc:
+                # An unwritable audit path must not abort a scan mid-flight with a
+                # traceback — the run is still authorized and still enforced. Warn
+                # once and keep the in-memory buffer, so the operator learns the
+                # trail is not landing instead of losing the whole scan to it.
+                if not self._warned:
+                    self._warned = True
+                    log.warning("audit log %s is not writable (%s); continuing", self.path, exc)
 
     @property
     def entries(self) -> list[dict[str, object]]:
         return list(self._buffer)
+
+
+def _positive_limit(data: dict[str, object], key: str, default: int, path: str | Path) -> int:
+    """Read a positive integer limit from the scope file, or refuse the file.
+
+    A limit of 0 or a negative number is not a meaningful cap — it reads as
+    "allow nothing", which no caller implements — and it was previously accepted
+    silently, so a typo'd scope file looked enforced while capping nothing at all.
+    A limit is a safety control, so a broken one fails the load instead of being
+    quietly replaced by a default the operator never chose.
+    """
+    raw = data.get(key, default)
+    if not isinstance(raw, int | str | float) or isinstance(raw, bool):
+        raise ValueError(f"{path}: {key} must be a positive integer, got {raw!r}")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{path}: {key} must be a positive integer, got {raw!r}") from None
+    if value < 1:
+        raise ValueError(f"{path}: {key} must be at least 1, got {value}")
+    return value
 
 
 class ScopeGuard:
@@ -84,8 +118,8 @@ class ScopeGuard:
             allowlist=data.get("allowlist", []),
             denylist=data.get("denylist", []),
             banner=data.get("banner", DEFAULT_BANNER),
-            max_hosts_per_scan=int(data.get("max_hosts_per_scan", 1024)),
-            max_ports_per_host=int(data.get("max_ports_per_host", 1000)),
+            max_hosts_per_scan=_positive_limit(data, "max_hosts_per_scan", 1024, path),
+            max_ports_per_host=_positive_limit(data, "max_ports_per_host", 1000, path),
             audit=audit,
         )
 

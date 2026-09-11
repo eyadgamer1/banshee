@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import socket
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -18,6 +19,8 @@ from scanner.core.budget import StealthBudget
 from scanner.core.interfaces import AuditLogger, Discoverer, Fingerprinter
 from scanner.core.models import Host, HostState, ScanConfig, ScanResult, Service
 from scanner.core.scope import ScopeGuard, ScopeViolationError
+
+log = logging.getLogger(__name__)
 
 ProgressHook = Callable[[str, dict[str, object]], None]
 
@@ -147,8 +150,16 @@ class ScanEngine:
                 resolved = {str(info[4][0]) for info in infos}
                 self.scope.audit.log("resolve", host=tok, ips=sorted(resolved))
                 out.extend(sorted(resolved))
-            except (socket.gaierror, OSError):
+            except (socket.gaierror, OSError, UnicodeError):
+                # UnicodeError (not an OSError) comes from the stdlib idna codec
+                # when a label is empty or over 63 bytes, so a long or malformed
+                # hostname used to escape as a traceback. A name we cannot encode
+                # is a name we cannot resolve — treat it as any other failure.
                 self.scope.audit.log("resolve_fail", host=tok)
+                # Warn, not just audit: a dropped target means the operator scanned
+                # less than they asked for, and the audit log is not on screen. At
+                # WARNING this shows by default without needing -v.
+                log.warning("could not resolve %r; target dropped", tok)
         return out
 
     async def run(self, cfg: ScanConfig) -> ScanResult:
@@ -186,11 +197,20 @@ class ScanEngine:
                 "no requested target is inside the scope allowlist",
             )
 
-        if len(in_scope) > self.scope.max_hosts_per_scan:
+        # Refuse rather than trim. Truncating scanned a silently different target
+        # set than the operator asked for while the stats line still reported the
+        # full count, so a cap set as a blast-radius guard looked honored when it
+        # was not. expand_target already refuses a single oversized token; this is
+        # the same contract applied to the total across tokens.
+        if self.scope.max_hosts_per_scan > 0 and len(in_scope) > self.scope.max_hosts_per_scan:
             self.scope.audit.log(
                 "host_cap", requested=len(in_scope), cap=self.scope.max_hosts_per_scan
             )
-            in_scope = in_scope[: self.scope.max_hosts_per_scan]
+            raise TargetTooLargeError(
+                f"{len(cfg.targets)} target(s)",
+                len(in_scope),
+                self.scope.max_hosts_per_scan,
+            )
 
         if cfg.dry_run:
             result.hosts = [Host(ip=ip, state=HostState.UNKNOWN) for ip in in_scope]

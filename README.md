@@ -337,8 +337,12 @@ Python), `--adaptive` (Go-only info-gain probe planner), and `--udp` also exist
 `--fingerprint/--no-fingerprint`, `--names/--no-names`,
 `--classify/--no-classify`, `--ssvc`, `--plugins`, `--deception`, `--enrich`,
 `--agentic`, `--txt`/`--xml`/`--csv`/`--sarif`, `-A`/`--all`, `--db`,
-`--baseline`, `--audit-log` — all on by request only, all covered in
-`banshee --help-advanced`.
+`--baseline`, `--audit-log`, `--plugin-dir` — all on by request only, all
+covered in `banshee --help-advanced`.
+
+Verbosity is a real three-step dial: `-v` adds BANSHEE's own INFO detail, `-vv`
+adds its DEBUG detail, and `-vvv` adds DEBUG from third-party libraries too.
+`--silent` overrides all of them, `--debug` is a shorthand for `-vv`.
 
 ### Safety & maintenance
 

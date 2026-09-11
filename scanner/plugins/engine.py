@@ -65,6 +65,14 @@ def _rules_in(doc: Any) -> list[dict[str, Any]]:
 def load_rules(plugin_dir: Path) -> list[dict[str, Any]]:
     """Load all *.yaml / *.yml rule files from plugin_dir."""
     if not plugin_dir.exists():
+        # Say so rather than return quietly: the default directory is relative to
+        # the working directory, so running banshee from anywhere but the repo
+        # root produced zero plugin coverage that looked like "no rules matched".
+        log.warning(
+            "plugin directory %s does not exist; no rules loaded "
+            "(pass --plugin-dir to point at your rules)",
+            plugin_dir.resolve(),
+        )
         return []
     rules = []
     for path in sorted(plugin_dir.glob("*.y*ml")):

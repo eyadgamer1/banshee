@@ -2,6 +2,76 @@
 
 ## [Unreleased]
 
+### Fixed — error handling and flag hardening
+
+Found by running the CLI against authorized targets across six parallel test
+passes, then verifying each fix against the command that exposed it.
+
+**Safety**
+
+- **An orphaned engine kept scanning after a forceful kill.** `banshee` kills its
+  Go child on the way out, but a `taskkill /F`, a Task Manager "End task", an OOM
+  kill or a crash never runs that cleanup, so the engine went on sending probes
+  under an authorization the operator had already withdrawn. The engine now takes
+  `-watch-stdin` and stops when the pipe `banshee` holds closes — the OS closes it
+  however the parent died. A parent-PID poll was tried first and does not work:
+  Windows never reparents an orphan, so the recorded parent PID stays valid.
+- **`max_hosts_per_scan` was not enforced across targets.** The per-token check
+  worked, but the total was silently truncated by the Python engine (which still
+  reported the full count in its stats line) and ignored outright by the Go engine,
+  so a cap set as a blast-radius guard capped nothing on the default path. Both
+  engines now refuse, matching the documented contract.
+- **Non-positive scope limits were accepted.** `max_hosts_per_scan: 0` and `-1`
+  loaded without complaint. A limit is a safety control, so a broken one now fails
+  the scope load instead of being replaced by a default the operator never chose.
+- **`--iface` was never validated.** `--iface eth99nope` and `--iface ""` ran an
+  ordinary scan while ignoring the flag. Invalid names are now rejected, listing
+  the interfaces that do exist.
+
+**Crashes**
+
+- Four paths surfaced raw Python tracebacks: a hostname over 63 bytes per label
+  (the idna codec raises `UnicodeError`, which is not an `OSError`), an emoji in a
+  target or report path (`UnicodeEncodeError` on a legacy Windows code page), a
+  `--db`/`--baseline` path that is not a SQLite database, and an unwritable
+  `--audit-log` path. All now fail with one actionable line.
+- **A bad `--db` path could hang instead of failing.** `ScanStore` left its
+  aiosqlite connection open when schema setup failed, and that non-daemon worker
+  thread kept the process alive after the scan finished.
+
+**Silent wrong behavior**
+
+- `--json con` (and any Windows device name) reported `wrote json -> con` for
+  output that never existed; reserved names are now refused.
+- `--json ""` and `-p ""` were treated as "flag not given" and silently ignored.
+- An unresolvable hostname was dropped with no on-screen warning.
+- A repeated value flag (`--json a --json b`) discarded the first value silently.
+- `--plugins` read `config/plugins/` relative to the working directory, so running
+  from anywhere else produced zero plugin coverage that looked like "no matches".
+  It now warns and accepts `--plugin-dir`.
+- `--agentic` reported "Ollama offline — run `ollama serve`" for every failure,
+  including Ollama running fine with the configured model not pulled. The message
+  now names the real cause.
+
+**Flags that did not do what they said**
+
+- `-v`/`-vv`/`-vvv` was a three-step dial with two steps: `-v` did nothing outside
+  `--adaptive`, `-vv` and `-vvv` were identical, and DEBUG needed the separate
+  `--debug`. The three steps are now distinct (own INFO, own DEBUG, everything).
+- `--debug --silent` printed DEBUG output despite `--silent` promising none;
+  `--silent` now wins over every verbosity flag.
+- `--rate`, `--timeout` and `--threads` had no upper bound, so `--threads 100000`
+  was accepted.
+- An oversized target exited 1 on the Go engine and 2 on the Python engine; Go
+  usage errors now map to exit 2 on both.
+- Duplicate targets were not deduplicated on the Go path, so the two engines
+  disagreed on the host count for identical input.
+
+Not a defect, checked and rejected: `--mode` is honored by both engines. It looks
+inert at small port counts because the Go engine is fast enough that its
+concurrency ceiling is not the bottleneck there; at 20,000 ports the three modes
+span 16.8s / 26.9s / 81.0s.
+
 ### Fixed
 
 - **Target ranges failed on the default engine.** `10.0.0.5-20` and

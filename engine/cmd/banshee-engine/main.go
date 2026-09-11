@@ -59,7 +59,9 @@ func run() int {
 		confidence = fs.Float64("confidence", 0.85, "adaptive: stop when class posterior reaches this")
 		hostRisk   = fs.Float64("host-risk-budget", 0, "adaptive: cap detection risk per host (0 = none)")
 		pretty     = fs.Bool("pretty", false, "indent JSON output")
-		out        = fs.String("o", "-", "output file (- = stdout)")
+		watchStdin = fs.Bool("watch-stdin", false,
+			"stop scanning when stdin closes, so a forcefully killed parent cannot leave this engine probing")
+		out = fs.String("o", "-", "output file (- = stdout)")
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: banshee-engine [flags] <target> [target...]\n\n")
@@ -99,6 +101,18 @@ func run() int {
 		return exitBadUsage
 	}
 
+	// scope.Expand refuses a single token that expands past the cap; this is the
+	// same contract applied to the total across every token, so a cap set as a
+	// blast-radius guard cannot be walked past by listing hosts separately. The
+	// Python engine raises TargetTooLargeError here for the same condition.
+	if guard.MaxHostsPerScan > 0 && len(expanded) > guard.MaxHostsPerScan {
+		fmt.Fprintf(os.Stderr,
+			"error: targets expand to %d addresses, over the max_hosts_per_scan limit of %d. "+
+				"Narrow the targets or raise the cap in %s\n",
+			len(expanded), guard.MaxHostsPerScan, *scopeFile)
+		return exitBadUsage
+	}
+
 	// The engine enforces max_ports_per_host itself; say so out loud here rather
 	// than let a scope-file limit shorten the scan without the operator noticing.
 	if n := len(ports); n > 0 && guard.MaxPortsPerHost > 0 && n > guard.MaxPortsPerHost {
@@ -131,6 +145,14 @@ func run() int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+
+	// Stop scanning if the parent that authorized this run disappears — a
+	// forceful kill of banshee never runs its own child cleanup. See watchdog.go.
+	if *watchStdin {
+		var cancelOrphan context.CancelFunc
+		ctx, cancelOrphan = watchParentPipe(ctx)
+		defer cancelOrphan()
+	}
 
 	result, err := eng.Run(ctx, expanded)
 	if err != nil {

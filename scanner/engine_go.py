@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 # emit a full JSON document; 3 only signals "nothing was in scope". 1 and 2 are
 # hard failures with no JSON on stdout.
 _EXIT_OK = 0
+_EXIT_BAD_USAGE = 2
 _EXIT_NO_TARGETS = 3
 
 _BINARY_NAME = "banshee-engine.exe" if os.name == "nt" else "banshee-engine"
@@ -87,6 +88,33 @@ def _signal_stop(proc: asyncio.subprocess.Process, *, force: bool = False) -> No
             proc.terminate()
     except (ProcessLookupError, OSError):  # already gone / already reaped
         pass
+
+
+class EngineUsageError(ValueError):
+    """The Go engine rejected the arguments it was given (its exit code 2).
+
+    Distinct from RuntimeError, which means the engine itself could not run. The
+    CLI maps this to exit 2 so a rejection the Python engine reports as bad usage
+    does not become a generic runtime failure just because the Go path handled it.
+    """
+
+
+async def _collect(proc: asyncio.subprocess.Process) -> tuple[bytes, bytes]:
+    """Drain the engine's stdout and stderr, then wait for it to exit.
+
+    This exists instead of `proc.communicate()` because communicate() closes the
+    child's stdin as its first act, and stdin is exactly what `-watch-stdin` uses
+    as its liveness signal — closing it makes the engine cancel its own scan
+    immediately. Reading both streams concurrently keeps the semantics that matter:
+    neither pipe can fill and deadlock the child.
+
+    stdin stays open for the whole run and is closed by process teardown, so the
+    engine sees it close only when this process really is finished with it.
+    """
+    assert proc.stdout is not None and proc.stderr is not None
+    stdout, stderr = await asyncio.gather(proc.stdout.read(), proc.stderr.read())
+    await proc.wait()
+    return stdout, stderr
 
 
 async def _stop_engine(proc: asyncio.subprocess.Process) -> None:
@@ -237,7 +265,10 @@ async def resolve_targets(targets: list[str], audit: AuditLog | None = None) -> 
             out.extend(ips)
             if audit is not None:
                 audit.log("resolve", host=token, ips=sorted(ips))
-        except (socket.gaierror, OSError):
+        except (socket.gaierror, OSError, UnicodeError):
+            # UnicodeError is not an OSError: the stdlib idna codec raises it for
+            # an empty or over-63-byte label, so a malformed hostname would
+            # otherwise escape this handler as a traceback.
             log.debug("go engine: could not resolve %r; dropping", token)
             if audit is not None:
                 audit.log("resolve_fail", host=token)
@@ -277,7 +308,21 @@ def build_args(cfg: ScanConfig, scope_path: str, targets: list[str]) -> list[str
     user never typed (that is what its own `optInt` guards against on its side).
     `targets` is the already-resolved address set, not the raw cfg.targets.
     """
-    args: list[str] = ["-scope", scope_path, "-mode", cfg.mode.value, "-T", str(cfg.timing)]
+    # -watch-stdin makes the engine exit when this process's end of its stdin pipe
+    # closes. A forceful kill of banshee (taskkill /F, "End task", OOM, a crash)
+    # never runs the cleanup below, and an orphaned engine would keep probing under
+    # an authorization the operator already withdrew. The OS closes the pipe no
+    # matter how banshee died, so this holds where PID-watching does not — Windows
+    # never reparents an orphan, so its recorded parent PID stays valid forever.
+    args: list[str] = [
+        "-scope",
+        scope_path,
+        "-mode",
+        cfg.mode.value,
+        "-T",
+        str(cfg.timing),
+        "-watch-stdin",
+    ]
 
     if cfg.ports:
         args += ["-ports", _compact_port_spec(sorted(cfg.ports))]
@@ -339,6 +384,10 @@ async def run_go_engine(cfg: ScanConfig, guard: ScopeGuard, scope_path: str) -> 
         proc = await asyncio.create_subprocess_exec(
             binary,
             *args,
+            # stdin is a pipe we hold open and never write to: it is the engine's
+            # liveness signal for -watch-stdin, not a channel. When this process
+            # dies by any means, the OS closes this end and the engine stops.
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -354,7 +403,7 @@ async def run_go_engine(cfg: ScanConfig, guard: ScopeGuard, scope_path: str) -> 
     # `banshee` would exit while banshee-engine kept scanning the target.
     timeout = _engine_timeout()
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout, stderr = await asyncio.wait_for(_collect(proc), timeout=timeout)
     except TimeoutError:
         await _stop_engine(proc)
         raise RuntimeError(
@@ -368,6 +417,15 @@ async def run_go_engine(cfg: ScanConfig, guard: ScopeGuard, scope_path: str) -> 
         raise
     err_text = stderr.decode("utf-8", "replace").strip()
 
+    # A usage error is the operator's input being wrong, not the engine failing.
+    # Surfacing it as RuntimeError made the CLI exit 1 where the Python engine
+    # exits 2 for the identical rejection — an oversized target, say — so the two
+    # engines disagreed on the exit code for the same mistake.
+    if proc.returncode == _EXIT_BAD_USAGE:
+        # The engine already prefixes its own message with "error: "; the CLI adds
+        # that prefix when it prints, so strip it rather than show "error: error:".
+        detail = err_text.removeprefix("error: ").strip() or "invalid arguments"
+        raise EngineUsageError(detail)
     if proc.returncode not in (_EXIT_OK, _EXIT_NO_TARGETS):
         raise RuntimeError(
             f"banshee-engine failed (exit {proc.returncode}): {err_text or 'no error output'}"
