@@ -210,6 +210,9 @@ async def _run_pipeline(
 
     # C1 — attack-path graph (always runs; attaches pivot findings)
     attack_graph = build_attack_graph(result)
+    # Carry the edges on the result so every writer can serialize them. Printing a
+    # count and dropping the graph meant the pivot paths never left this function.
+    result.attack_graph = attack_graph.to_dict()
     if not silent and attack_graph.edges:
         n_pivots = len(attack_graph.pivot_targets())
         console.print(
@@ -218,6 +221,7 @@ async def _run_pipeline(
 
     # C2 — segment map: group hosts by subnet, flag bridge hosts
     seg_map = build_segment_map(result)
+    result.segment_map = seg_map.to_dict()
     if not silent and seg_map.segments:
         console.print(
             f"[dim]C2 segment map: {len(seg_map.segments)} segments, "

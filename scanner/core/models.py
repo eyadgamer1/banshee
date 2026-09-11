@@ -302,6 +302,13 @@ class ScanResult(BaseModel):
     started_at: datetime = Field(default_factory=_utcnow)
     finished_at: datetime | None = None
     plan: ScanPlan | None = None  # adaptive audit trail; set only by the Go engine
+    # C1/C2 correlation output, as produced by `build_attack_graph(...).to_dict()`
+    # and `build_segment_map(...).to_dict()`. Both passes always run, but their
+    # results used to reach the operator only as a printed count and then be
+    # discarded — nothing serialized them, so no report could show the pivot paths
+    # or the segment layout the scan had already worked out.
+    attack_graph: list[dict[str, str]] = Field(default_factory=list)
+    segment_map: dict[str, object] = Field(default_factory=dict)
 
     @field_validator("hosts", mode="before")
     @classmethod

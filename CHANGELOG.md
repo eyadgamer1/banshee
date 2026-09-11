@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Fixed — reports now carry what the scan already worked out
+
+- **The attack-path graph and segment map never reached a report.** Both passes
+  run on every scan, but their output existed only as a one-line printed count
+  and was then discarded: `to_dict()` on either structure was dead code, and no
+  writer serialized them. `ScanResult` now carries `attack_graph` and
+  `segment_map`, so every format that serializes the result gets them, and the
+  HTML report renders them as "Attack paths" and "Network segments" tables.
+- **The HTML report was strictly less informative than the JSON.** It listed only
+  port numbers, dropping the `product`, `version`, `banner` and version-confidence
+  tier the JSON already recorded. Added a Services table carrying all four.
+  Autoescaping is on, which matters here because a banner is remote,
+  attacker-controlled text.
+- **The HTML report was titled "pps scan report"** — a leftover product name on
+  every generated report. Now "BANSHEE scan report".
+- **`config/settings.toml`'s `model` key read as a supported default.** It is a
+  placeholder that only works once the named model is pulled locally, so the
+  comment now says that outright and points at `ollama list`. The failure path
+  already names the model rather than blaming a down server.
+- Removed a stale `banshee-engine.exe` from the repo root: an older build than
+  `engine/`'s, unreachable by `find_engine()` (which checks `$BANSHEE_ENGINE`,
+  then PATH, then `engine/`), and git-ignored, so it was purely local confusion.
+
 ### Fixed — error handling and flag hardening
 
 Found by running the CLI against authorized targets across six parallel test

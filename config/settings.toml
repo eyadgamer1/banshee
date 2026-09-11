@@ -2,8 +2,11 @@
 # Every key here is consumed by a real call site — do not add unread keys.
 
 [llm]
-# Used by --agentic (D1 ReAct loop and D4 report). Must be a model your local
-# Ollama has pulled: `ollama pull <model>`.
+# Used by --agentic (D1 ReAct loop and D4 report). This is a placeholder, not a
+# model this project ships or verifies: --agentic only works once your local
+# Ollama has pulled whatever is named here (`ollama pull <model>`, `ollama list`
+# to see what you have). If it is missing, --agentic degrades to the static
+# report and names the model in the warning rather than claiming Ollama is down.
 model = "llama3"
 base_url = "http://localhost:11434"
 timeout_seconds = 60

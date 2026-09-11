@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>pps scan report</title>
+<title>BANSHEE scan report</title>
 <style>
   :root { --bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;--green:#3fb950;--yellow:#d29922;--red:#f85149;--blue:#58a6ff; }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -74,6 +74,37 @@
   {% endif %}
 </section>
 
+{# Services carry product/version/banner that the JSON report already records.
+   Listing only port numbers above made the HTML strictly less informative than
+   the JSON for the same scan, so the detail is shown here with the confidence
+   tier that grades the version claim (distinct from the port's open/closed
+   confidence). Autoescaping is on: a banner is remote, attacker-controlled text. #}
+{% set svc_rows = namespace(items=[]) %}
+{% for host in result.hosts %}{% for s in host.services %}{% set svc_rows.items = svc_rows.items + [(host, s)] %}{% endfor %}{% endfor %}
+{% if svc_rows.items %}
+<section>
+  <h2>Services</h2>
+  <table>
+    <thead>
+      <tr><th>Host</th><th>Port</th><th>Service</th><th>Product</th><th>Version</th><th>Version conf.</th><th>Banner</th></tr>
+    </thead>
+    <tbody>
+      {% for host, s in svc_rows.items %}
+      <tr>
+        <td>{{ host.ip }}</td>
+        <td><span class="tag">{{ s.port }}</span></td>
+        <td>{{ s.name or '' }}</td>
+        <td>{{ s.product or '' }}</td>
+        <td>{{ s.version or '' }}</td>
+        <td{% if s.version_confidence %} class="{{ s.version_confidence.value }}"{% endif %}>{{ s.version_confidence.value if s.version_confidence else '' }}</td>
+        <td>{{ s.banner or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
 {% set all_findings = namespace(items=[]) %}
 {% for host in result.hosts %}{% for f in host.findings %}{% set all_findings.items = all_findings.items + [(host, f)] %}{% endfor %}{% endfor %}
 {% if all_findings.items %}
@@ -95,6 +126,48 @@
       {% endfor %}
     </tbody>
   </table>
+</section>
+{% endif %}
+
+{# C1/C2 correlation, newly carried on ScanResult. Both passes always ran but
+   their output previously reached the operator only as a one-line count. #}
+{% if result.attack_graph %}
+<section>
+  <h2>Attack paths</h2>
+  <table>
+    <thead><tr><th>From</th><th>To</th><th>Via</th><th>Port</th><th>Severity</th></tr></thead>
+    <tbody>
+      {% for e in result.attack_graph %}
+      <tr>
+        <td>{{ e.src }}</td><td>{{ e.dst }}</td><td>{{ e.service }}</td>
+        <td><span class="tag">{{ e.port }}</span></td>
+        <td class="{{ e.severity }}">{{ e.severity }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if result.segment_map and result.segment_map.segments %}
+<section>
+  <h2>Network segments</h2>
+  <table>
+    <thead><tr><th>Segment</th><th>Hosts</th></tr></thead>
+    <tbody>
+      {% for seg in result.segment_map.segments %}
+      <tr>
+        <td>{{ seg.network }}</td>
+        <td>{% for h in seg.hosts %}<span class="tag">{{ h }}</span> {% endfor %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if result.segment_map.bridges %}
+  <p>Bridge hosts (reachable in more than one segment):
+    {% for b in result.segment_map.bridges %}<span class="tag">{{ b }}</span> {% endfor %}
+  </p>
+  {% endif %}
 </section>
 {% endif %}
 
