@@ -67,10 +67,14 @@ passes, then verifying each fix against the command that exposed it.
 - Duplicate targets were not deduplicated on the Go path, so the two engines
   disagreed on the host count for identical input.
 
-Not a defect, checked and rejected: `--mode` is honored by both engines. It looks
-inert at small port counts because the Go engine is fast enough that its
-concurrency ceiling is not the bottleneck there; at 20,000 ports the three modes
-span 16.8s / 26.9s / 81.0s.
+Not a defect: `--mode` is honored by both engines. It looks inert at small port
+counts because mode scales only concurrency (`budget.go`: stealth 0.25, normal
+1.0, aggressive 2.0) and the Go engine is fast enough that its concurrency
+ceiling is not the bottleneck there — at T3 the template delay is 0, so nothing
+else moves. A manual run at 20,000 ports against localhost measured roughly
+17s / 27s / 81s for aggressive / normal / stealth. That was a one-off
+measurement, not a committed benchmark, so treat the ratio as indicative and the
+mechanism (concurrency, nothing else) as the checkable claim.
 
 ### Fixed
 

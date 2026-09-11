@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"io"
 	"os"
 )
 
@@ -41,11 +40,13 @@ func watchParentPipe(ctx context.Context) (context.Context, context.CancelFunc) 
 		// harmless — keep waiting for the close that matters.
 		buf := make([]byte, 256)
 		for {
+			// Any error at all ends the scan, io.EOF included: EOF means the parent
+			// closed the pipe, and every other error means the pipe is unusable.
+			// Neither case leaves a parent to be authorized by, so they share one
+			// branch rather than being distinguished for no behavioural difference.
 			if _, err := os.Stdin.Read(buf); err != nil {
-				if err == io.EOF || err != nil {
-					cancel()
-					return
-				}
+				cancel()
+				return
 			}
 			select {
 			case <-ctx.Done():
