@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Fixed — the Go engine is now built into the same install, not a separate fetch
+
+- **`banshee install-engine` could hand you a `banshee-engine` binary older than
+  the Python wrapper it's paired with.** The wrapper (`engine_go.py`) is
+  whatever git commit `pip`/`uv` just checked out; the release asset
+  `install-engine` downloads is whatever tag someone last cut. When they
+  disagreed on a flag — the wrapper started passing `-watch-stdin` to the
+  engine before a release existed with that flag — the engine rejected it and
+  exited immediately with `flag provided but not defined: -watch-stdin`, and
+  every scan silently reported 0 hosts.
+  Fixed at the root: a new hatchling build hook (`hatch_build.py`) now compiles
+  `engine/` from source and bundles the resulting binary into the wheel itself
+  at `scanner/data/banshee-engine[.exe]`, as part of the *same*
+  `pip install`/`uv tool install` command. `find_engine()` prefers that
+  bundled copy over anything on PATH, so Python and Go always come from the
+  same commit — no separate engine-install step, no version drift possible.
+  `banshee install-engine` (GitHub Releases download) still exists as a
+  fallback for machines with no Go toolchain at install time; `install.sh` now
+  installs Go *before* installing the Python package so the common case
+  bundles automatically in one command.
+
 ### Fixed — reports now carry what the scan already worked out
 
 - **The attack-path graph and segment map never reached a report.** Both passes

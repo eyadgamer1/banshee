@@ -73,19 +73,20 @@ It is built for ethical hackers and defenders who care about two things most sca
 
 ## Install
 
-**TL;DR — one line, any OS, both engines ready** (needs [`uv`](https://github.com/astral-sh/uv); [install uv](https://github.com/astral-sh/uv#installation) first if you don't have it):
+**TL;DR — one line, any OS, both engines ready** (needs [`uv`](https://github.com/astral-sh/uv) and a [Go](https://go.dev/dl/) toolchain on `PATH` so the engine bundles automatically; [install uv](https://github.com/astral-sh/uv#installation) first if you don't have it):
 
 ```bash
 uv tool install git+https://github.com/eyadgamer1/banshee
-banshee install-engine   # fetches the fast Go engine — skip with --no-go below
 banshee --help
 ```
 
-That's the whole install — a single self-contained `banshee` command with a
-built-in default scope, Python and Go set up together in one atomic sequence
-("two faces of one coin," not a separate optional step). No clone, no config.
-If the Go fetch fails (offline, unsupported platform) `banshee` still works
-fully via `--engine python`; nothing above is fatal to the install.
+That's the whole install — one command. `banshee-engine` is compiled from the
+same source tree as the Python wrapper and packed straight into the installed
+package (see [The Go engine](#the-go-engine)), so Python and Go are always the
+same version — not a separate fetch that can drift out of sync. If `go` isn't
+on `PATH` when you run the command above, the install still succeeds
+Python-only (`--engine python`), and `banshee install-engine` fetches a
+prebuilt fallback binary afterwards.
 
 > **Requirements:** Python **3.12+**. The active TCP-connect sweep, TLS JA4S fingerprinting, and service/version detection all need **no privileges** and never prompt for one. Only the raw-socket probes (`-i`/`--iface` TCP/IP-stack and clock-skew fingerprinting, ICMP discovery) need elevation, and they auto-elevate through your OS's own **`sudo`** (Linux/macOS) or **UAC** (Windows) prompt the moment you pass `-i` — never a BANSHEE-owned password field. Windows also needs **[Npcap](https://npcap.com)** (WinPcap-compatible mode) for those raw-socket probes once elevated.
 
@@ -97,17 +98,17 @@ fully via `--engine python`; nothing above is fatal to the install.
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"   # do NOT run `exec $SHELL` here; it replaces the shell
+sudo apt update && sudo apt install -y golang-go   # so the engine bundles automatically below
 uv tool install git+https://github.com/eyadgamer1/banshee
 uv tool update-shell                    # keep `banshee` on PATH in future terminals
-banshee install-engine
 ```
 
 > **`banshee: command not found`?** Run `uv tool update-shell` then open a new terminal, or `export PATH="$HOME/.local/bin:$PATH"` for the current shell.
 
 ```bash
 # pipx (isolated venv), or the one-line installer (auto-detects uv/pipx/pip,
-# bundles the Go engine by default — pass --no-go to skip it):
-sudo apt update && sudo apt install -y pipx && pipx install git+https://github.com/eyadgamer1/banshee
+# installs Go first if missing, then installs BANSHEE — pass --no-go to skip Go):
+sudo apt update && sudo apt install -y pipx golang-go && pipx install git+https://github.com/eyadgamer1/banshee
 curl -sSL https://raw.githubusercontent.com/eyadgamer1/banshee/main/install.sh | bash
 ```
 
@@ -115,8 +116,8 @@ curl -sSL https://raw.githubusercontent.com/eyadgamer1/banshee/main/install.sh |
 
 ```powershell
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+winget install GoLang.Go   # so the engine bundles automatically below; skip to stay Python-only
 uv tool install git+https://github.com/eyadgamer1/banshee
-banshee install-engine
 banshee 192.168.1.0/24 --mode normal
 ```
 
@@ -125,9 +126,8 @@ The active TCP-connect sweep works out of the box. Raw-socket fingerprinting nee
 **macOS**
 
 ```bash
-brew install uv                    # or: brew install pipx
+brew install uv go                 # or: brew install pipx go
 uv tool install git+https://github.com/eyadgamer1/banshee
-banshee install-engine
 ```
 
 **Docker**
@@ -156,23 +156,27 @@ go build -o banshee-engine ./cmd/banshee-engine
 ./banshee-engine -h
 ```
 
-**Easiest — one command.** After installing BANSHEE, pull the matching prebuilt
-engine straight onto your `PATH`:
+**Easiest — one command, and you've likely already done it.** If `go` was on
+your `PATH` when you ran `uv tool install`/`pip install`/`install.sh` above, the
+engine is already bundled — nothing further to do:
+
+```bash
+banshee scanme.nmap.org --engine go -sV --mode normal
+```
+
+**No Go toolchain at install time?** Fetch a prebuilt fallback binary instead
+(same idea as before, just no longer the default path):
 
 ```bash
 banshee install-engine
 ```
 
 It detects your OS/arch, downloads the right `banshee-engine` from the latest
-release, drops it next to the `banshee` command, and verifies it runs — no Go
-toolchain, no manual download. Then the Go engine just works:
-
-```bash
-banshee scanme.nmap.org --engine go -sV --mode normal
-```
-
-Options: `banshee install-engine --tag v1.3.0` pins a release; `--dir PATH`
-installs somewhere specific.
+release, drops it next to the `banshee` command, and verifies it runs. Note
+this can trail the Python wrapper by a release or two — installing/reinstalling
+with a Go toolchain present is what keeps the two version-locked. Options:
+`banshee install-engine --tag v1.3.0` pins a release; `--dir PATH` installs
+somewhere specific.
 
 **Prebuilt Go engine — manual download.** Every tagged release also ships static
 `banshee-engine` binaries for Linux (amd64/arm64), Windows, and macOS
@@ -636,7 +640,8 @@ alone, so an ordinary web+SSH server is left untouched.
 |---|---|
 | `scope file not found` | You passed `--scope` with a path that doesn't exist. Without `--scope`, a built-in default is used automatically. |
 | Everything reports out-of-scope | Only happens when you passed a restrictive `--scope`: your target isn't in that file's `allowlist`. Add it, or drop `--scope` to use the open default (see [Scope](#scope--authorization)). Exit code **3**. |
-| `banshee-engine binary not found` | `--engine go` can't find the engine. Easiest fix: **`banshee install-engine`** (downloads the prebuilt binary onto your PATH). Or build it (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`), set `BANSHEE_ENGINE=/path/to/banshee-engine`, or use `--engine auto` to fall back to Python. |
+| `banshee-engine binary not found` | It didn't get bundled — `go` probably wasn't on `PATH` when you installed. Easiest fix: install a [Go toolchain](https://go.dev/dl/) and reinstall (`uv tool install --reinstall git+https://github.com/eyadgamer1/banshee`) so it bundles automatically. Or fetch a prebuilt fallback: **`banshee install-engine`**. Or build it (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`), set `BANSHEE_ENGINE=/path/to/banshee-engine`, or use `--engine auto` to fall back to Python. |
+| `flag provided but not defined: -watch-stdin` | A stale prebuilt engine from `banshee install-engine` predates a flag the wrapper now sends. Reinstall with a Go toolchain on `PATH` so the engine bundles from the same commit instead of a lagging release tag. |
 | `--udp needs the Go engine` | `--udp` (and `--adaptive`) run only on the Go engine. Add `--engine go` (or `--engine auto` with the binary present). |
 | `--udp and --adaptive are mutually exclusive` | Pick one: UDP scan **or** the TCP adaptive planner. |
 | UDP scan shows lots of `open\|filtered` | Working as intended — that's an honest "can't tell open from filtered", not a bug. A firewall dropping UDP looks identical to a silent open service; only a reply proves `open`. |

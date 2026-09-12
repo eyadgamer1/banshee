@@ -145,8 +145,29 @@ def _build_hint() -> str:
     )
 
 
+def _ensure_executable(path: Path) -> None:
+    """Wheel zip permissions aren't reliably preserved by every install tool, so
+    the bundled binary can land without its execute bit on POSIX. Self-heal
+    rather than fail `--engine go` over a chmod."""
+    if os.name == "nt":
+        return
+    mode = path.stat().st_mode
+    if not mode & 0o111:
+        with contextlib.suppress(OSError):
+            path.chmod(mode | 0o111)
+
+
 def find_engine() -> str:
-    """Locate the Go engine binary: $BANSHEE_ENGINE → PATH → repo engine/ dir.
+    """Locate the Go engine binary: $BANSHEE_ENGINE → bundled package copy → PATH
+    → repo engine/ dir.
+
+    The bundled copy (``scanner/data/banshee-engine``) is what `hatch_build.py`
+    compiles from source and packs into the wheel at install time — it is built
+    from the *exact* commit that also produced this Python file, so it can never
+    drift out of flag-sync with `engine_go.py` the way a separately-versioned
+    GitHub Release asset can (see CHANGELOG: `-watch-stdin` rejected by a stale
+    release binary). It is checked before PATH so a bundled match always wins
+    over an older `banshee-engine` a user happens to have lying around.
 
     Raises RuntimeError with a build hint if none is found, so `--engine go`
     fails with actionable guidance rather than an opaque FileNotFoundError.
@@ -156,6 +177,11 @@ def find_engine() -> str:
         if Path(env).is_file():
             return env
         raise RuntimeError(f"BANSHEE_ENGINE={env!r} does not point to a file")
+
+    bundled = Path(__file__).resolve().parent / "data" / _BINARY_NAME
+    if bundled.is_file():
+        _ensure_executable(bundled)
+        return str(bundled)
 
     on_path = shutil.which("banshee-engine")
     if on_path:
