@@ -334,7 +334,7 @@ intensity) — `banshee --help-advanced`.
 Python), `--adaptive` (Go-only info-gain probe planner), and `--udp` also exist
 — `banshee --help-advanced`.
 
-> `--engine go` needs the binary built (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`) and found via `$BANSHEE_ENGINE`, your `PATH`, or the repo's `engine/` directory, or just run `banshee install-engine`. See [The Go engine](#the-go-engine).
+> `--engine go` needs a `banshee-engine` binary. Normally that's already bundled (installed with `go` on `PATH` — see [Install](#install)); otherwise build it (`cd engine && go build -o banshee-engine ./cmd/banshee-engine`) and point `$BANSHEE_ENGINE`/`PATH` at it, or run `banshee install-engine` for a prebuilt fallback. See [The Go engine](#the-go-engine).
 
 ### Toggles, output files, persistence — advanced
 
